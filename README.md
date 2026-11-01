@@ -70,6 +70,19 @@ two programmes, assigned fees, payments, assessments and sample grades.
 - Students only receive published grades.
 - Editing a published grade withholds the result until republished.
 
+## Form handling and validation
+
+- TypeScript strict mode is enabled; explicit `any` is prohibited.
+- React Hook Form manages interactive forms.
+- Zod schemas are connected through zodResolver for client validation.
+- The server independently validates incoming requests with Zod.
+- Input schemas are shared where client and server contracts match.
+- TypeScript input types are inferred from schemas.
+- Server-side role and ownership checks protect operations and data.
+- Database-dependent rules are enforced in server-side operations.
+- Reusable form components provide consistent labels, errors,
+  accessibility and submission states.
+
 ## Implementation plan
 
 1. Application foundation and quality checks.
