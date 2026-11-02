@@ -1,0 +1,121 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum EnrolmentStatus {
+  ENROLLED
+  DEFERRED
+  WITHDRAWN
+  COMPLETED
+}
+
+model Programme {
+  id         String   @id @default(cuid())
+  name       String   @unique
+  defaultFee Decimal  @db.Decimal(10, 2)
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(3)
+
+  students    Student[]
+  assessments Assessment[]
+}
+
+model Student {
+  id            String          @id @default(cuid())
+  studentNumber Int             @unique @default(autoincrement())
+  enrolmentYear Int
+  fullName      String
+  email         String          @unique
+  dateOfBirth   DateTime        @db.Date
+  programmeId   String
+  academicYear  String
+  status        EnrolmentStatus @default(ENROLLED)
+  createdAt     DateTime        @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime        @updatedAt @db.Timestamptz(3)
+
+  programme     Programme      @relation(fields: [programmeId], references: [id], onDelete: Restrict)
+  feeAssignment FeeAssignment?
+  submissions   Submission[]
+
+  @@index([programmeId, academicYear])
+  @@index([status])
+}
+
+model FeeAssignment {
+  id        String   @id @default(cuid())
+  studentId String   @unique
+  amount    Decimal  @db.Decimal(10, 2)
+  dueDate   DateTime @db.Date
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  student  Student   @relation(fields: [studentId], references: [id], onDelete: Restrict)
+  payments Payment[]
+
+  @@index([dueDate])
+}
+
+model Payment {
+  id              String   @id @default(cuid())
+  feeAssignmentId String
+  amount          Decimal  @db.Decimal(10, 2)
+  paymentDate     DateTime @db.Date
+  reference       String
+  createdAt       DateTime @default(now()) @db.Timestamptz(3)
+
+  feeAssignment FeeAssignment @relation(fields: [feeAssignmentId], references: [id], onDelete: Restrict)
+
+  @@unique([feeAssignmentId, reference])
+}
+
+model Assessment {
+  id           String   @id @default(cuid())
+  programmeId  String
+  academicYear String
+  title        String
+  module       String
+  deadline     DateTime @db.Timestamptz(3)
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @db.Timestamptz(3)
+
+  programme   Programme    @relation(fields: [programmeId], references: [id], onDelete: Restrict)
+  submissions Submission[]
+
+  @@index([programmeId, academicYear])
+  @@index([deadline])
+}
+
+model Submission {
+  id               String   @id @default(cuid())
+  studentId        String
+  assessmentId     String
+  storagePath      String   @unique
+  originalFilename String
+  size             Int
+  submittedAt      DateTime @default(now()) @db.Timestamptz(3)
+  createdAt        DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime @updatedAt @db.Timestamptz(3)
+
+  student    Student    @relation(fields: [studentId], references: [id], onDelete: Restrict)
+  assessment Assessment @relation(fields: [assessmentId], references: [id], onDelete: Restrict)
+  result     Result?
+
+  @@unique([studentId, assessmentId])
+  @@index([assessmentId])
+}
+
+model Result {
+  id           String    @id @default(cuid())
+  submissionId String    @unique
+  grade        Decimal   @db.Decimal(5, 2)
+  publishedAt  DateTime? @db.Timestamptz(3)
+  createdAt    DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime  @updatedAt @db.Timestamptz(3)
+
+  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Restrict)
+}
