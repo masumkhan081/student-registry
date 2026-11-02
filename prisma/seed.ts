@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { db } from "../src/lib/db";
+import { Prisma } from "../src/generated/prisma/client";
 
 const programmeFixtures = [
   {
@@ -64,6 +65,21 @@ function dateFromToday(days: number): Date {
   return date;
 }
 
+const seedPaymentFixtures = [
+  {
+    studentId: "demo-student-ava", // Partial payment example: £2,000 paid towards £6,000 fee
+    amount: "2000.00",
+    daysAgo: 5,
+    reference: "SEED-PAY-AVA-001",
+  },
+  {
+    studentId: "demo-student-mia", // Fully paid example: £6,000 paid towards £6,000 fee
+    amount: "6000.00",
+    daysAgo: 10,
+    reference: "SEED-PAY-MIA-001",
+  },
+];
+
 async function main() {
   for (const programme of programmeFixtures) {
     await db.programme.upsert({
@@ -99,32 +115,104 @@ async function main() {
     });
   }
 
+  // Seed payments with idempotency, preserving reviewer payments and preventing overpayment
+  for (const paymentFixture of seedPaymentFixtures) {
+    const feeAssignment = await db.feeAssignment.findUnique({
+      where: { studentId: paymentFixture.studentId },
+      include: { payments: true },
+    });
+
+    if (!feeAssignment) continue;
+
+    // Check if stable reference already exists
+    const existingRef = feeAssignment.payments.find(
+      (p) => p.reference.toLowerCase() === paymentFixture.reference.toLowerCase(),
+    );
+
+    if (existingRef) {
+      continue; // Stable payment already recorded; preserve it
+    }
+
+    // Calculate current total paid from all existing payments (including reviewer payments)
+    let totalPaid = new Prisma.Decimal(0);
+    for (const p of feeAssignment.payments) {
+      totalPaid = totalPaid.plus(p.amount);
+    }
+
+    const assignedFee = new Prisma.Decimal(feeAssignment.amount);
+    const remainingBalance = assignedFee.minus(totalPaid);
+    const intendedAmount = new Prisma.Decimal(paymentFixture.amount);
+
+    // Ensure rerunning the seed cannot create an overpayment
+    if (remainingBalance.greaterThan(0)) {
+      const amountToRecord = Prisma.Decimal.min(intendedAmount, remainingBalance);
+      if (amountToRecord.greaterThan(0)) {
+        await db.payment.create({
+          data: {
+            feeAssignmentId: feeAssignment.id,
+            amount: amountToRecord,
+            paymentDate: dateFromToday(-paymentFixture.daysAgo),
+            reference: paymentFixture.reference,
+          },
+        });
+      }
+    }
+  }
+
   const students = await db.student.findMany({
     where: {
       id: { in: studentFixtures.map((student) => student.id) },
     },
     include: {
       programme: true,
-      feeAssignment: true,
+      feeAssignment: {
+        include: {
+          payments: {
+            orderBy: [{ paymentDate: "desc" }, { createdAt: "desc" }],
+          },
+        },
+      },
     },
     orderBy: { studentNumber: "asc" },
   });
 
+  const now = new Date();
+  const todayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+
   console.table(
-    students.map((student) => ({
-      studentId:
-        `SMS-${student.enrolmentYear}-` +
-        String(student.studentNumber).padStart(4, "0"),
-      name: student.fullName,
-      programme: student.programme.name,
-      fee: student.feeAssignment?.amount.toFixed(2),
-      dueDate: student.feeAssignment?.dueDate
-        .toISOString()
-        .slice(0, 10),
-    })),
+    students.map((student) => {
+      const fee = student.feeAssignment?.amount ?? new Prisma.Decimal(0);
+      let paid = new Prisma.Decimal(0);
+      for (const p of student.feeAssignment?.payments ?? []) {
+        paid = paid.plus(p.amount);
+      }
+      const balance = Prisma.Decimal.max(new Prisma.Decimal(0), fee.minus(paid));
+      const dueDate = student.feeAssignment?.dueDate;
+      const dueMidnight = dueDate
+        ? Date.UTC(dueDate.getUTCFullYear(), dueDate.getUTCMonth(), dueDate.getUTCDate())
+        : 0;
+      const isOverdue = dueDate && dueMidnight < todayUtc && balance.greaterThan(0);
+
+      return {
+        studentId:
+          `SMS-${student.enrolmentYear}-` +
+          String(student.studentNumber).padStart(4, "0"),
+        name: student.fullName,
+        programme: student.programme.name,
+        fee: `£${fee.toFixed(2)}`,
+        paid: `£${paid.toFixed(2)}`,
+        balance: `£${balance.toFixed(2)}`,
+        dueDate: dueDate ? dueDate.toISOString().slice(0, 10) : "N/A",
+        status: balance.equals(0)
+          ? "Paid in full"
+          : isOverdue
+            ? "OVERDUE"
+            : "Outstanding",
+      };
+    }),
   );
 
-  console.log("Core demo data seeded successfully.");
+  console.log("Core demo data and payments seeded successfully.");
 }
 
 main()

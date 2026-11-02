@@ -9,6 +9,7 @@ import {
   formatEnrolmentStatus,
   formatDateDisplay,
 } from "@/features/students/format";
+import { StudentFeeSection } from "@/features/fees/student-fee-section";
 import type { EnrolmentStatus } from "@/generated/prisma/enums";
 
 export const metadata: Metadata = {
@@ -75,10 +76,21 @@ async function StudentDetailContent({
       },
       feeAssignment: {
         select: {
+          id: true,
           amount: true,
           dueDate: true,
-          _count: {
-            select: { payments: true },
+          payments: {
+            select: {
+              id: true,
+              amount: true,
+              paymentDate: true,
+              reference: true,
+              createdAt: true,
+            },
+            orderBy: [
+              { paymentDate: "desc" },
+              { createdAt: "desc" },
+            ],
           },
         },
       },
@@ -97,9 +109,26 @@ async function StudentDetailContent({
     student.studentNumber,
   );
 
-  const paymentCount = student.feeAssignment?._count.payments ?? 0;
+  const paymentCount = student.feeAssignment?.payments.length ?? 0;
   const submissionCount = student._count.submissions;
   const hasHistory = paymentCount > 0 || submissionCount > 0;
+
+  const serializedFeeAssignment = student.feeAssignment
+    ? {
+        id: student.feeAssignment.id,
+        amount: student.feeAssignment.amount.toFixed(2),
+        dueDate: student.feeAssignment.dueDate.toISOString().slice(0, 10),
+      }
+    : null;
+
+  const serializedPayments =
+    student.feeAssignment?.payments.map((p) => ({
+      id: p.id,
+      amount: p.amount.toFixed(2),
+      paymentDate: p.paymentDate.toISOString().slice(0, 10),
+      reference: p.reference,
+      createdAt: p.createdAt.toISOString(),
+    })) ?? [];
 
   return (
     <div className="space-y-6">
@@ -278,6 +307,15 @@ async function StudentDetailContent({
           </div>
         </section>
       </div>
+
+      {/* Fees, Live Balance, Payment History & Payment Recording */}
+      {serializedFeeAssignment && (
+        <StudentFeeSection
+          studentId={student.id}
+          feeAssignment={serializedFeeAssignment}
+          initialPayments={serializedPayments}
+        />
+      )}
     </div>
   );
 }

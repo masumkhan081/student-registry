@@ -122,6 +122,13 @@ export async function PATCH(
         throw new StudentNotFoundError("Student record not found.");
       }
 
+      // Concurrency lock: Acquire exclusive row lock on FeeAssignment to serialize
+      // with concurrent payment transactions. If a payment is committing, this edit
+      // waits and checks fresh payment counts before permitting programme/fee edits.
+      if (student.feeAssignment) {
+        await tx.$queryRaw`SELECT id FROM "FeeAssignment" WHERE id = ${student.feeAssignment.id} FOR UPDATE`;
+      }
+
       // Check email uniqueness excluding current student
       if (data.email !== student.email) {
         const emailConflict = await tx.student.findFirst({
@@ -139,8 +146,12 @@ export async function PATCH(
         }
       }
 
-      // Check whether student has payments or submissions
-      const paymentCount = student.feeAssignment?._count.payments ?? 0;
+      // Fresh payment count under the FeeAssignment row lock
+      const paymentCount = student.feeAssignment
+        ? await tx.payment.count({
+            where: { feeAssignmentId: student.feeAssignment.id },
+          })
+        : 0;
       const submissionCount = student._count.submissions;
       const hasHistory = paymentCount > 0 || submissionCount > 0;
 
