@@ -303,7 +303,12 @@ async function StaffStudentsContent({
                         )}
                       </td>
                       <td className="whitespace-nowrap px-6 py-4 font-medium text-slate-900">
-                        {student.fullName}
+                        <Link
+                          href={`/staff/students/${student.id}`}
+                          className="font-semibold text-slate-900 underline underline-offset-4 hover:text-blue-600"
+                        >
+                          {student.fullName}
+                        </Link>
                       </td>
                       <td className="whitespace-nowrap px-6 py-4 text-slate-600">
                         {student.programme.name}

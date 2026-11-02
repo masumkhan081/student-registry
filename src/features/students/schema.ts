@@ -157,3 +157,6 @@ export const enrolStudentSchema = z.object({
 });
 
 export type EnrolStudentInput = z.infer<typeof enrolStudentSchema>;
+
+export const updateStudentSchema = enrolStudentSchema;
+export type UpdateStudentInput = EnrolStudentInput;

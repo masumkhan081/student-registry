@@ -76,3 +76,44 @@ export const ENROLMENT_STATUS_OPTIONS: readonly {
   { value: "WITHDRAWN", label: "Withdrawn" },
   { value: "COMPLETED", label: "Completed" },
 ] as const;
+
+/**
+ * Format a Date or date string to a human-readable display string (e.g. "12 Apr 2003").
+ * Uses UTC components to prevent timezone shifts.
+ */
+export function formatDateDisplay(dateInput: Date | string): string {
+  const date = typeof dateInput === "string" ? new Date(dateInput) : dateInput;
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  const monthNames = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+  ];
+  const month = monthNames[date.getUTCMonth()];
+  const year = date.getUTCFullYear();
+  return `${day} ${month} ${year}`;
+}
+
+/**
+ * Format a Date or date string to YYYY-MM-DD for HTML date inputs.
+ * Uses UTC components to prevent timezone shifts.
+ */
+export function formatDateInputValue(dateInput: Date | string): string {
+  if (typeof dateInput === "string" && /^\d{4}-\d{2}-\d{2}$/.test(dateInput)) {
+    return dateInput;
+  }
+  const date = typeof dateInput === "string" ? new Date(dateInput) : dateInput;
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
