@@ -65,6 +65,13 @@ function dateFromToday(days: number): Date {
   return date;
 }
 
+function dateTimeFromTodayUtc(days: number, hours: number, minutes: number): Date {
+  const date = new Date();
+  date.setUTCDate(date.getUTCDate() + days);
+  date.setUTCHours(hours, minutes, 0, 0);
+  return date;
+}
+
 const seedPaymentFixtures = [
   {
     studentId: "demo-student-ava", // Partial payment example: £2,000 paid towards £6,000 fee
@@ -77,6 +84,33 @@ const seedPaymentFixtures = [
     amount: "6000.00",
     daysAgo: 10,
     reference: "SEED-PAY-MIA-001",
+  },
+];
+
+const assessmentFixtures = [
+  {
+    id: "demo-assessment-computing-upcoming",
+    programmeId: "demo-programme-computing",
+    academicYear: "2026/2027",
+    title: "Web Applications Project",
+    module: "CS204 Next.js Full Stack Architecture",
+    getDeadline: () => dateTimeFromTodayUtc(14, 23, 59),
+  },
+  {
+    id: "demo-assessment-computing-past",
+    programmeId: "demo-programme-computing",
+    academicYear: "2026/2027",
+    title: "Algorithms & Data Structures Coursework",
+    module: "CS201 Data Structures & Algorithms",
+    getDeadline: () => dateTimeFromTodayUtc(-7, 23, 59),
+  },
+  {
+    id: "demo-assessment-business-upcoming",
+    programmeId: "demo-programme-business",
+    academicYear: "2026/2027",
+    title: "Strategic Management Case Study",
+    module: "BM202 Strategic Leadership",
+    getDeadline: () => dateTimeFromTodayUtc(21, 18, 0),
   },
 ];
 
@@ -159,6 +193,27 @@ async function main() {
     }
   }
 
+  // Seed repeatable assessments: preserve existing deadlines and reviewer-created records
+  for (const fixture of assessmentFixtures) {
+    const existing = await db.assessment.findUnique({
+      where: { id: fixture.id },
+    });
+
+    if (!existing) {
+      await db.assessment.create({
+        data: {
+          id: fixture.id,
+          programmeId: fixture.programmeId,
+          academicYear: fixture.academicYear,
+          title: fixture.title,
+          module: fixture.module,
+          deadline: fixture.getDeadline(),
+        },
+      });
+    }
+    // If it exists, do not overwrite deadline to preserve reviewer modifications
+  }
+
   const students = await db.student.findMany({
     where: {
       id: { in: studentFixtures.map((student) => student.id) },
@@ -179,6 +234,7 @@ async function main() {
   const now = new Date();
   const todayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
 
+  console.log("\n--- Student Cohort & Fees ---");
   console.table(
     students.map((student) => {
       const fee = student.feeAssignment?.amount ?? new Prisma.Decimal(0);
@@ -212,7 +268,28 @@ async function main() {
     }),
   );
 
-  console.log("Core demo data and payments seeded successfully.");
+  const seededAssessments = await db.assessment.findMany({
+    include: { programme: true },
+    orderBy: [{ deadline: "asc" }, { title: "asc" }],
+  });
+
+  console.log("\n--- Repeatable Assessment Fixtures ---");
+  console.table(
+    seededAssessments.map((a) => {
+      const isPast = a.deadline.getTime() < now.getTime();
+      return {
+        id: a.id,
+        title: a.title,
+        module: a.module,
+        programme: a.programme.name,
+        cohortYear: a.academicYear,
+        deadlineUtc: a.deadline.toISOString().replace(".000Z", " UTC"),
+        status: isPast ? "Past deadline" : "Upcoming",
+      };
+    }),
+  );
+
+  console.log("Core demo data, payments, and assessments seeded successfully.");
 }
 
 main()

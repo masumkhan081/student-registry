@@ -9,6 +9,10 @@ import {
   getUtcMidnightToday,
 } from "@/features/fees/calculations";
 import { formatStudentId, formatDateDisplay } from "@/features/students/format";
+import {
+  formatUtcDateTimeDisplay,
+  isPastDeadline,
+} from "@/features/assessments/format";
 
 async function DashboardContent() {
   const identity = await getDemoIdentity();
@@ -17,43 +21,160 @@ async function DashboardContent() {
     redirect("/");
   }
 
-  let heading = "Registry workspace";
-  let description = "You are viewing the demo as Staff.";
-
+  // =========================================================================
+  // Student Workspace
+  // =========================================================================
   if (identity.role === "STUDENT") {
+    // Resolve student from server-side demo identity.
+    // Never accept a student ID from the browser to decide whose records to show.
     const student = await db.student.findUnique({
       where: { id: identity.studentId },
-      select: { fullName: true },
+      select: {
+        id: true,
+        fullName: true,
+        programmeId: true,
+        academicYear: true,
+        programme: {
+          select: { name: true },
+        },
+      },
     });
 
     if (!student) {
       redirect("/");
     }
 
-    heading = `Welcome, ${student.fullName}`;
-    description = "You are viewing your student workspace.";
+    // Query assessments matching BOTH their programme and academic year
+    const assessments = await db.assessment.findMany({
+      where: {
+        programmeId: student.programmeId,
+        academicYear: student.academicYear,
+      },
+      select: {
+        id: true,
+        title: true,
+        module: true,
+        deadline: true,
+      },
+      orderBy: { deadline: "asc" },
+    });
+
+    const now = new Date();
 
     return (
-      <section className="rounded-xl border border-slate-200 bg-white p-8 shadow-sm">
-        <p className="text-sm font-medium text-slate-500">
-          Demo mode · Student
-        </p>
-        <h1 className="mt-3 text-3xl font-semibold text-slate-900">{heading}</h1>
-        <p className="mt-3 text-slate-600">{description}</p>
+      <div className="space-y-8">
+        {/* Student Workspace Banner */}
+        <section className="rounded-xl border border-slate-200 bg-white p-8 shadow-sm">
+          <p className="text-sm font-medium text-slate-500">
+            Demo mode · Student
+          </p>
+          <h1 className="mt-3 text-3xl font-semibold text-slate-900">
+            Welcome, {student.fullName}
+          </h1>
+          <p className="mt-2 text-sm text-slate-600">
+            Cohort: <span className="font-semibold text-slate-800">{student.programme.name}</span> · Academic year <span className="font-semibold text-slate-800">{student.academicYear}</span>
+          </p>
 
-        <div className="mt-6">
-          <Link
-            href="/"
-            className="inline-block font-medium text-slate-700 underline underline-offset-4 hover:text-slate-900"
-          >
-            Switch demo identity
-          </Link>
-        </div>
-      </section>
+          <div className="mt-6">
+            <Link
+              href="/"
+              className="inline-block text-sm font-medium text-slate-600 underline underline-offset-4 hover:text-slate-900"
+            >
+              Switch demo identity
+            </Link>
+          </div>
+        </section>
+
+        {/* My Assessments Section */}
+        <section
+          aria-labelledby="my-assessments-heading"
+          className="rounded-xl border border-slate-200 bg-white p-8 shadow-sm"
+        >
+          <div className="flex flex-wrap items-baseline justify-between gap-3">
+            <div>
+              <h2
+                id="my-assessments-heading"
+                className="text-xl font-semibold text-slate-900"
+              >
+                My assessments
+              </h2>
+              <p className="mt-1 text-sm text-slate-600">
+                Coursework and assessment deadlines for your programme cohort ({student.programme.name}, {student.academicYear}).
+              </p>
+            </div>
+            <span className="text-xs text-slate-500">
+              All deadlines in UTC
+            </span>
+          </div>
+
+          <div className="mt-6">
+            {assessments.length === 0 ? (
+              <div
+                role="status"
+                className="rounded-lg border border-dashed border-slate-200 p-8 text-center"
+              >
+                <p className="text-sm font-medium text-slate-800">
+                  No assessments scheduled
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  There are currently no assessments assigned for your programme and academic year.
+                </p>
+              </div>
+            ) : (
+              <ul
+                role="list"
+                className="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white"
+              >
+                {assessments.map((assessment) => {
+                  const past = isPastDeadline(assessment.deadline, now);
+
+                  return (
+                    <li
+                      key={assessment.id}
+                      className="p-5 flex flex-wrap items-center justify-between gap-4 hover:bg-slate-50/75 transition-colors"
+                    >
+                      <div className="space-y-1">
+                        <h3 className="text-base font-semibold text-slate-900">
+                          {assessment.title}
+                        </h3>
+                        <p className="text-xs font-medium text-slate-500">
+                          {assessment.module}
+                        </p>
+                      </div>
+
+                      <div className="text-right flex flex-col items-end gap-1.5">
+                        <div className="text-xs font-mono font-medium text-slate-900">
+                          {formatUtcDateTimeDisplay(assessment.deadline)}
+                        </div>
+                        <div>
+                          {past ? (
+                            <span className="inline-flex items-center rounded-md bg-amber-50 px-2.5 py-0.5 text-xs font-medium text-amber-800 ring-1 ring-inset ring-amber-600/20">
+                              Past deadline
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center rounded-md bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20">
+                              Upcoming
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        </section>
+      </div>
     );
   }
 
-  // Staff Identity: Query overdue students
+  // =========================================================================
+  // Staff Workspace
+  // =========================================================================
+  const heading = "Registry workspace";
+  const description = "You are viewing the demo as Staff.";
+
   // Overdue criteria: dueDate strictly before today at 00:00 UTC AND outstanding balance > 0.
   // A fee due today is NOT overdue.
   const todayUtc = getUtcMidnightToday();
@@ -130,6 +251,13 @@ async function DashboardContent() {
             className="inline-flex items-center rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-slate-800"
           >
             View students
+          </Link>
+
+          <Link
+            href="/staff/assessments"
+            className="inline-flex items-center rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50"
+          >
+            Assessments
           </Link>
 
           <Link
