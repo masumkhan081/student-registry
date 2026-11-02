@@ -105,11 +105,11 @@ Each milestone will be committed after its behaviour is verified.
 
 ## AI assistance
 
-AI has been used to analyse the assessment and discuss scope,
-product rules and implementation sequencing.
-
-This section will be updated during development to describe actual
-usage, verification and any suggestions changed or rejected.
+AI has been used across the development process:
+- Initial project analysis, requirement scoping, and data model drafting.
+- Student directory implementation: Designing search parameter handling, index-backed exact student ID lookup vs case-insensitive name matching, and Partial Prerendering Suspense boundaries.
+- Student enrolment workflow: Designing shared Zod validation (date-only calendar checks, non-future DOB, consecutive academic year format), atomic transaction boundary for `Student` and `FeeAssignment` creation, server-side derivation of calendar `enrolmentYear` (assigning SMS-2026-… for enrolments entered in 2026 even when backdated to 2025/2026), read-only fee display with `useWatch`, and mapping PostgreSQL uniqueness conflicts (`P2002`) to HTTP 409 for concurrency safety.
+- Code review and verification: Running automated validation scripts and ensuring strict TypeScript compliance without explicit `any`.
 
 ## Setup and reviewer walkthrough
 

@@ -55,6 +55,8 @@ The sequence does not reset annually. Gaps are acceptable.
   has payments or submissions.
 - Before that point, corrections update the enrolment and assigned
   programme fee together.
+- Fee due date is entered directly by staff during enrolment and allows
+  past dates to accommodate backdated student registrations.
 - The application does not offer hard deletion of student records.
 
 ## Payment integrity
