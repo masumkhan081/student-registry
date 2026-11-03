@@ -1,4 +1,6 @@
 import "dotenv/config";
+import { Buffer } from "node:buffer";
+import { createClient } from "@supabase/supabase-js";
 import { db } from "../src/lib/db";
 import { Prisma } from "../src/generated/prisma/client";
 
@@ -114,6 +116,33 @@ const assessmentFixtures = [
   },
 ];
 
+function createSeedPdfBuffer(title: string, author: string): Buffer {
+  return Buffer.from(
+    `%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>\nendobj\n4 0 obj\n<< /Length 70 >>\nstream\nBT\n/F1 12 Tf\n72 712 Td\n(${title} - Coursework by ${author}) Tj\nET\nendstream\nendobj\nxref\n0 5\n0000000000 65535 f \n0000000010 00000 n \n0000000060 00000 n \n0000000117 00000 n \n0000000173 00000 n \ntrailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n293\n%%EOF\n`,
+  );
+}
+
+const seedSubmissionFixtures = [
+  {
+    studentId: "demo-student-noah", // Noah Patel: Published result (Distinction)
+    assessmentId: "demo-assessment-computing-past",
+    filename: "noah_patel_algorithms_coursework.pdf",
+    submittedDaysAgo: 8,
+    storagePath: "submissions/demo-student-noah/demo-assessment-computing-past/seed-noah-algorithms.pdf",
+    grade: "82.00",
+    publishedDaysAgo: 3, // Published 3 days ago
+  },
+  {
+    studentId: "demo-student-mia", // Mia Clarke: Withheld result (Merit)
+    assessmentId: "demo-assessment-computing-past",
+    filename: "mia_clarke_algorithms_coursework.pdf",
+    submittedDaysAgo: 6,
+    storagePath: "submissions/demo-student-mia/demo-assessment-computing-past/seed-mia-algorithms.pdf",
+    grade: "65.50",
+    publishedDaysAgo: null, // Withheld
+  },
+];
+
 async function main() {
   for (const programme of programmeFixtures) {
     await db.programme.upsert({
@@ -214,6 +243,103 @@ async function main() {
     // If it exists, do not overwrite deadline to preserve reviewer modifications
   }
 
+  // Seed submissions & results with real downloadable files in Supabase Storage
+  const supabaseUrl =
+    process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_SECRET_KEY;
+  const bucket = process.env.SUPABASE_STORAGE_BUCKET || "sms";
+
+  let supabaseClient = null;
+  if (supabaseUrl && supabaseKey) {
+    supabaseClient = createClient(supabaseUrl, supabaseKey, {
+      auth: { persistSession: false },
+    });
+  }
+
+  for (const fixture of seedSubmissionFixtures) {
+    const existingSub = await db.submission.findUnique({
+      where: {
+        studentId_assessmentId: {
+          studentId: fixture.studentId,
+          assessmentId: fixture.assessmentId,
+        },
+      },
+      include: { result: true },
+    });
+
+    const pdfBuffer = createSeedPdfBuffer(
+      "Algorithms Coursework",
+      fixture.studentId === "demo-student-noah" ? "Noah Patel" : "Mia Clarke",
+    );
+
+    // If storage client is configured, ensure demo file is in Supabase Storage
+    if (supabaseClient) {
+      try {
+        await supabaseClient.storage
+          .from(bucket)
+          .upload(fixture.storagePath, pdfBuffer, {
+            contentType: "application/pdf",
+            upsert: true,
+          });
+      } catch (err: unknown) {
+        console.warn(
+          `Could not upload seed file to storage: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
+    if (!existingSub) {
+      // Create new submission with its result
+      const submittedAt = dateFromToday(-fixture.submittedDaysAgo);
+      const publishedAt =
+        fixture.publishedDaysAgo !== null
+          ? dateFromToday(-fixture.publishedDaysAgo)
+          : null;
+
+      await db.submission.create({
+        data: {
+          studentId: fixture.studentId,
+          assessmentId: fixture.assessmentId,
+          storagePath: fixture.storagePath,
+          originalFilename: fixture.filename,
+          size: pdfBuffer.length,
+          submittedAt,
+          result: {
+            create: {
+              grade: new Prisma.Decimal(fixture.grade),
+              publishedAt,
+            },
+          },
+        },
+      });
+    } else {
+      // Submission already exists: preserve reviewer edits on rerun
+      // Only seed Result if no result exists yet
+      if (!existingSub.result) {
+        const publishedAt =
+          fixture.publishedDaysAgo !== null
+            ? dateFromToday(-fixture.publishedDaysAgo)
+            : null;
+
+        await db.result.create({
+          data: {
+            submissionId: existingSub.id,
+            grade: new Prisma.Decimal(fixture.grade),
+            publishedAt,
+          },
+        });
+      }
+    }
+  }
+
+  // Guarantee Ava's upcoming assessment has NO submission, so the reviewer can walk through upload -> grade -> publish
+  await db.submission.deleteMany({
+    where: {
+      studentId: "demo-student-ava",
+      assessmentId: "demo-assessment-computing-upcoming",
+    },
+  });
+
   const students = await db.student.findMany({
     where: {
       id: { in: studentFixtures.map((student) => student.id) },
@@ -289,7 +415,31 @@ async function main() {
     }),
   );
 
-  console.log("Core demo data, payments, and assessments seeded successfully.");
+  const seededSubmissions = await db.submission.findMany({
+    include: {
+      student: true,
+      assessment: true,
+      result: true,
+    },
+    orderBy: [{ submittedAt: "desc" }],
+  });
+
+  console.log("\n--- Submissions & Results Fixtures ---");
+  console.table(
+    seededSubmissions.map((s) => ({
+      student: s.student.fullName,
+      assessment: s.assessment.title,
+      file: s.originalFilename,
+      grade: s.result ? `${s.result.grade.toFixed(2)}%` : "Ungraded",
+      publication: s.result
+        ? s.result.publishedAt
+          ? "PUBLISHED"
+          : "WITHHELD"
+        : "N/A",
+    })),
+  );
+
+  console.log("Core demo data, payments, assessments, and submission results seeded successfully.");
 }
 
 main()

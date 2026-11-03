@@ -123,3 +123,47 @@ export function formatFileSize(bytes: number): string {
   }
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
+
+export type GradeClassification = "Fail" | "Pass" | "Merit" | "Distinction";
+
+/**
+ * Calculates grade classification per specification:
+ * - Below 40: Fail
+ * - 40 to below 60: Pass
+ * - 60 to below 70: Merit
+ * - 70 through 100: Distinction
+ */
+export function getGradeClassification(
+  gradeInput: number | string,
+): GradeClassification {
+  const grade =
+    typeof gradeInput === "number"
+      ? gradeInput
+      : Number.parseFloat(String(gradeInput));
+
+  if (Number.isNaN(grade)) {
+    throw new Error(`Invalid grade: ${gradeInput}`);
+  }
+
+  if (grade < 40) {
+    return "Fail";
+  }
+  if (grade < 60) {
+    return "Pass";
+  }
+  if (grade < 70) {
+    return "Merit";
+  }
+  return "Distinction";
+}
+
+/**
+ * Format grade number as two decimal places string (e.g. 78.50).
+ */
+export function formatGrade(gradeInput: number | string): string {
+  const grade =
+    typeof gradeInput === "number"
+      ? gradeInput
+      : Number.parseFloat(String(gradeInput));
+  return Number.isNaN(grade) ? "" : grade.toFixed(2);
+}

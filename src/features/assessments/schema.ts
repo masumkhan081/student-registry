@@ -40,3 +40,39 @@ export const createAssessmentSchema = z.object({
 });
 
 export type CreateAssessmentInput = z.infer<typeof createAssessmentSchema>;
+
+export const gradeInputSchema = z
+  .string()
+  .trim()
+  .min(1, "Grade is required.")
+  .regex(
+    /^(?:100(?:\.0{1,2})?|\d{1,2}(?:\.\d{1,2})?)$/,
+    "Grade must be a number between 0 and 100 with at most two decimal places.",
+  )
+  .refine((val) => {
+    const num = Number.parseFloat(val);
+    return !Number.isNaN(num) && num >= 0 && num <= 100;
+  }, "Grade must be between 0 and 100.");
+
+export const saveGradeSchema = z.object({
+  grade: gradeInputSchema,
+  submissionUpdatedAt: z
+    .string()
+    .trim()
+    .min(1, "submissionUpdatedAt is required."),
+});
+
+export type SaveGradeInput = z.infer<typeof saveGradeSchema>;
+
+export const publishGradeSchema = z.object({
+  expectedGrade: z.string().trim().optional(),
+  expectedResultUpdatedAt: z.string().trim().optional(),
+});
+
+export type PublishGradeInput = z.infer<typeof publishGradeSchema>;
+
+export const withholdGradeSchema = z.object({
+  expectedResultUpdatedAt: z.string().trim().optional(),
+});
+
+export type WithholdGradeInput = z.infer<typeof withholdGradeSchema>;
