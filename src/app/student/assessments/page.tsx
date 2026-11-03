@@ -5,9 +5,9 @@ import { redirect } from "next/navigation";
 import { getDemoIdentity } from "@/lib/demo-session";
 import { db } from "@/lib/db";
 import {
-  formatUtcDateTimeDisplay,
-  isPastDeadline,
-} from "@/features/assessments/format";
+  StudentAssessmentList,
+  type StudentAssessmentData,
+} from "@/features/assessments/student-assessment-list";
 
 export const metadata: Metadata = {
   title: "My assessments · Student Registry",
@@ -55,11 +55,37 @@ async function StudentAssessmentsContent() {
       title: true,
       module: true,
       deadline: true,
+      submissions: {
+        where: { studentId: student.id },
+        select: {
+          id: true,
+          originalFilename: true,
+          submittedAt: true,
+          size: true,
+        },
+      },
     },
     orderBy: { deadline: "asc" },
   });
 
-  const now = new Date();
+  const formattedAssessments: StudentAssessmentData[] = assessments.map((a) => {
+    const sub = a.submissions[0] || null;
+    return {
+      id: a.id,
+      title: a.title,
+      module: a.module,
+      deadline: a.deadline.toISOString(),
+      submission: sub
+        ? {
+            id: sub.id,
+            originalFilename: sub.originalFilename,
+            submittedAt: sub.submittedAt.toISOString(),
+            size: sub.size,
+            isLate: sub.submittedAt.getTime() > a.deadline.getTime(),
+          }
+        : null,
+    };
+  });
 
   return (
     <div className="space-y-6">
@@ -82,70 +108,7 @@ async function StudentAssessmentsContent() {
       </div>
 
       {/* Assessment List */}
-      {assessments.length === 0 ? (
-        <div
-          role="status"
-          className="rounded-xl border border-dashed border-slate-300 bg-white p-12 text-center"
-        >
-          <h2 className="text-base font-semibold text-slate-900">
-            No assessments scheduled
-          </h2>
-          <p className="mt-2 text-sm text-slate-600">
-            There are currently no assessments assigned for your programme and academic year cohort.
-          </p>
-        </div>
-      ) : (
-        <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
-          <table className="min-w-full divide-y divide-slate-200 text-left text-sm text-slate-700">
-            <caption className="sr-only">Coursework and assessment deadlines</caption>
-            <thead className="bg-slate-50 text-xs font-semibold uppercase text-slate-600">
-              <tr>
-                <th scope="col" className="px-6 py-3.5">
-                  Title & Module
-                </th>
-                <th scope="col" className="px-6 py-3.5">
-                  Submission deadline (UTC)
-                </th>
-                <th scope="col" className="px-6 py-3.5">
-                  Status
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200 bg-white">
-              {assessments.map((assessment) => {
-                const past = isPastDeadline(assessment.deadline, now);
-
-                return (
-                  <tr key={assessment.id} className="hover:bg-slate-50/75">
-                    <td className="px-6 py-4">
-                      <div className="font-semibold text-slate-900">
-                        {assessment.title}
-                      </div>
-                      <div className="text-xs text-slate-500 mt-0.5">
-                        {assessment.module}
-                      </div>
-                    </td>
-                    <td className="whitespace-nowrap px-6 py-4 font-mono text-xs text-slate-900">
-                      {formatUtcDateTimeDisplay(assessment.deadline)}
-                    </td>
-                    <td className="whitespace-nowrap px-6 py-4">
-                      {past ? (
-                        <span className="inline-flex items-center rounded-md bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-800 ring-1 ring-inset ring-amber-600/20">
-                          Past deadline
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center rounded-md bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20">
-                          Upcoming
-                        </span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
+      <StudentAssessmentList initialAssessments={formattedAssessments} />
     </div>
   );
 }
@@ -153,7 +116,7 @@ async function StudentAssessmentsContent() {
 export default function StudentAssessmentsPage() {
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-8 text-slate-900 sm:px-6 lg:px-8">
-      <div className="mx-auto max-w-4xl">
+      <div className="mx-auto max-w-5xl">
         <Suspense
           fallback={
             <div className="rounded-xl border border-slate-200 bg-white p-8 text-center">

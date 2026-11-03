@@ -94,3 +94,32 @@ export function isPastDeadline(
     typeof deadlineInput === "string" ? new Date(deadlineInput) : deadlineInput;
   return deadline.getTime() < now.getTime();
 }
+
+/**
+ * Check if a submission was submitted after the deadline.
+ */
+export function isSubmissionLate(
+  submittedAtInput: Date | string,
+  deadlineInput: Date | string,
+): boolean {
+  const submittedAt =
+    typeof submittedAtInput === "string"
+      ? new Date(submittedAtInput)
+      : submittedAtInput;
+  const deadline =
+    typeof deadlineInput === "string" ? new Date(deadlineInput) : deadlineInput;
+  return submittedAt.getTime() > deadline.getTime();
+}
+
+/**
+ * Format bytes into human-readable size (e.g. 512 KB, 2.4 MB).
+ */
+export function formatFileSize(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}

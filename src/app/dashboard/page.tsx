@@ -10,9 +10,9 @@ import {
 } from "@/features/fees/calculations";
 import { formatStudentId, formatDateDisplay } from "@/features/students/format";
 import {
-  formatUtcDateTimeDisplay,
-  isPastDeadline,
-} from "@/features/assessments/format";
+  StudentAssessmentList,
+  type StudentAssessmentData,
+} from "@/features/assessments/student-assessment-list";
 
 async function DashboardContent() {
   const identity = await getDemoIdentity();
@@ -55,11 +55,39 @@ async function DashboardContent() {
         title: true,
         module: true,
         deadline: true,
+        submissions: {
+          where: { studentId: student.id },
+          select: {
+            id: true,
+            originalFilename: true,
+            submittedAt: true,
+            size: true,
+          },
+        },
       },
       orderBy: { deadline: "asc" },
     });
 
-    const now = new Date();
+    const formattedAssessments: StudentAssessmentData[] = assessments.map(
+      (a) => {
+        const sub = a.submissions[0] || null;
+        return {
+          id: a.id,
+          title: a.title,
+          module: a.module,
+          deadline: a.deadline.toISOString(),
+          submission: sub
+            ? {
+                id: sub.id,
+                originalFilename: sub.originalFilename,
+                submittedAt: sub.submittedAt.toISOString(),
+                size: sub.size,
+                isLate: sub.submittedAt.getTime() > a.deadline.getTime(),
+              }
+            : null,
+        };
+      },
+    );
 
     return (
       <div className="space-y-8">
@@ -108,61 +136,7 @@ async function DashboardContent() {
           </div>
 
           <div className="mt-6">
-            {assessments.length === 0 ? (
-              <div
-                role="status"
-                className="rounded-lg border border-dashed border-slate-200 p-8 text-center"
-              >
-                <p className="text-sm font-medium text-slate-800">
-                  No assessments scheduled
-                </p>
-                <p className="mt-1 text-xs text-slate-500">
-                  There are currently no assessments assigned for your programme and academic year.
-                </p>
-              </div>
-            ) : (
-              <ul
-                role="list"
-                className="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white"
-              >
-                {assessments.map((assessment) => {
-                  const past = isPastDeadline(assessment.deadline, now);
-
-                  return (
-                    <li
-                      key={assessment.id}
-                      className="p-5 flex flex-wrap items-center justify-between gap-4 hover:bg-slate-50/75 transition-colors"
-                    >
-                      <div className="space-y-1">
-                        <h3 className="text-base font-semibold text-slate-900">
-                          {assessment.title}
-                        </h3>
-                        <p className="text-xs font-medium text-slate-500">
-                          {assessment.module}
-                        </p>
-                      </div>
-
-                      <div className="text-right flex flex-col items-end gap-1.5">
-                        <div className="text-xs font-mono font-medium text-slate-900">
-                          {formatUtcDateTimeDisplay(assessment.deadline)}
-                        </div>
-                        <div>
-                          {past ? (
-                            <span className="inline-flex items-center rounded-md bg-amber-50 px-2.5 py-0.5 text-xs font-medium text-amber-800 ring-1 ring-inset ring-amber-600/20">
-                              Past deadline
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center rounded-md bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-600/20">
-                              Upcoming
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
+            <StudentAssessmentList initialAssessments={formattedAssessments} />
           </div>
         </section>
       </div>
