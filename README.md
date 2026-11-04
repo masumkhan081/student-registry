@@ -2,8 +2,8 @@
 
 A full-stack student registry application with programme fee management, coursework submission, and grading built with Next.js App Router, TypeScript, Prisma 7, PostgreSQL, and private Supabase Storage.
 
-- **Production Deployment**: [https://student-registry-masumkhan081.vercel.app](https://student-registry-masumkhan081.vercel.app)
-- **Repository**: [https://github.com/masumkhan081/student-registry](https://github.com/masumkhan081/student-registry)
+- **Production Deployment**: https://student-registry-one.vercel.app
+- **Repository**: https://github.com/masumkhan081/student-registry
 
 ## Scope
 
