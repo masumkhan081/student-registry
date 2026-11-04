@@ -128,8 +128,7 @@ Environment configuration must precede `npm ci` so that Prisma Client can be com
 
 | Variable | Scope | Description |
 | :--- | :--- | :--- |
-| `DATABASE_URL` | Server-only | Pooled PostgreSQL connection string for Prisma ORM |
-| `DIRECT_URL` | Server-only | Direct PostgreSQL connection string for migrations |
+| `DATABASE_URL` | Server-only | PostgreSQL connection string for Prisma ORM |
 | `SUPABASE_URL` | Server-only / Client | Supabase project API URL (e.g. `https://xyz.supabase.co`) |
 | `NEXT_PUBLIC_SUPABASE_URL` | Browser-accessible | Fallback public project URL for client-side storage helpers |
 | `SUPABASE_SECRET_KEY` | Server-only | Supabase service-role secret key (never expose to browser) |
@@ -149,7 +148,7 @@ Environment configuration must precede `npm ci` so that Prisma Client can be com
 2. **Configure environment**:
    ```bash
    cp .env.example .env
-   # Populate DATABASE_URL, DIRECT_URL, SUPABASE_URL, and SUPABASE_SECRET_KEY in .env
+   # Populate DATABASE_URL, SUPABASE_URL, and SUPABASE_SECRET_KEY in .env
    ```
 
 3. **Install dependencies**:
@@ -184,13 +183,13 @@ Run the end-to-end verification script testing all critical recruiter edge cases
 npm test
 ```
 The automated test verifies:
-1. **Concurrent Payments**: Two simultaneous £70 payments against a £100 balance serialize via row locks (`SELECT ... FOR UPDATE`); exactly one succeeds and the remaining balance is £30.
-2. **Seed Rerun Preservation**: Running `prisma db seed` does not overwrite student uploads, staff grades, or publication states.
-3. **Atomic Grading & Concurrency Races**: Replaced student files return HTTP 409 to in-flight grade forms; grade changes return 409 to stale publish actions; unchanged saves preserve publication; new grades save as withheld; replaced files wipe prior results.
-4. **Exact Deadline Equality**: Submissions at `submittedAt >= deadline` are flagged as Late; `< deadline` are On time.
-5. **DOCX Security & Magic Bytes**: Renamed spreadsheets (.xlsx renamed to .docx) are rejected; genuine DOCX with OpenXML manifests pass; manifests exceeding 1 MiB are cleanly rejected.
-6. **Idempotent Retry**: Submitting the same uploaded object twice is idempotent and preserves active grades and storage files.
-7. **Marksheet Response Isolation**: Student marksheet queries strictly exclude withheld grades and peer submissions.
+1. **Concurrent Payments**: Two simultaneous £70 payment requests executed in parallel against a £100 balance serialize via database row locks (`SELECT ... FOR UPDATE`); exactly one succeeds with 201 Created and the other fails with 400 Bad Request, leaving the remaining balance at exactly £30.00.
+2. **Seed Rerun Preservation**: Running `prisma db seed` against a database with existing reviewer uploads, staff grades, and publication states preserves all submissions, storage objects, and marks without unconditional wiping or duplicate insertion.
+3. **Atomic Grading & Concurrency Races**: Replaced student files return HTTP 409 Conflict to in-flight grading forms; grade changes return HTTP 409 to stale publish actions to prevent unreviewed marks from publishing; unchanged saves preserve publication; new grades save as withheld; and replaced files wipe prior results.
+4. **Exact Deadline Equality**: Submissions at `submittedAt >= deadline` (including exact millisecond equality) are flagged as Late; `< deadline` are On time.
+5. **DOCX Security & Magic Bytes**: Renamed spreadsheets (.xlsx renamed to .docx) are rejected by inspecting internal OpenXML content types for `wordprocessingml`; genuine DOCX with OpenXML manifests pass; manifests exceeding the 1 MiB stream bound are cleanly rejected as decompression bombs.
+6. **Concurrent First-Upload Finalisation & Duplicate P2002 Conflict**: Directly invokes the actual `POST /api/assessments/[id]/submit` route handler under concurrent race conditions; forces a PostgreSQL unique constraint violation (`P2002`) on the losing request, asserts conflict resolution returns 200 OK with the winner's submission, verifies exactly one database row exists, confirms the winner's file in private storage remains intact byte-for-byte, and asserts a subsequent retry preserves active grades.
+7. **Marksheet Response Isolation**: Authenticated student marksheet API queries strictly exclude withheld grades and isolate records so peer submissions are completely inaccessible.
 
 Additional quality checks:
 ```bash
@@ -213,7 +212,7 @@ Use the demo identity switcher in the top navigation banner to switch between **
 
 #### Workflow 2: Programme Fees & Payments
 1. In the Student Directory, click **Record payment** on a student with an outstanding balance (e.g. *Ava Morgan*, balance £4,000). The link navigates directly to the payment section anchor (`#record-payment`).
-2. Enter a payment amount (e.g. `£1,000.00`) with a reference (e.g. `CARD-2026-001`).
+2. Enter a payment amount (e.g. `1000.00`; `£1,000.00` is the formatted display) with a reference (e.g. `CARD-2026-001`).
 3. Notice:
    - Payments exceeding the remaining balance are rejected client-side and server-side.
    - Duplicate references within the same fee assignment are rejected.
