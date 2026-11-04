@@ -1,6 +1,7 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
+import crypto from "node:crypto";
 import { deflateRawSync } from "node:zlib";
 import { execSync } from "node:child_process";
 import { db } from "../src/lib/db";
@@ -12,7 +13,97 @@ import {
 import {
   validateDocxArchive,
   validateFileBuffer,
+  getSupabaseServerClient,
+  getStorageBucketName,
+  downloadStorageObjectBuffer,
+  deleteStorageObject,
 } from "../src/lib/storage";
+import { POST as submitFinalisationHandler } from "../src/app/api/assessments/[id]/submit/route";
+
+function createValidCourseworkPdfBuffer(title: string, author: string): Buffer {
+  const streamContent = [
+    "BT",
+    "/F1 18 Tf",
+    "50 720 Td",
+    `(${title}) Tj`,
+    "/F1 12 Tf",
+    "0 -30 Td",
+    `(${author} - Student Coursework Submission) Tj`,
+    "/F1 10 Tf",
+    "0 -25 Td",
+    "(BSc Computing - Academic Year 2026/2027) Tj",
+    "0 -20 Td",
+    "(CS201 Data Structures & Algorithms Coursework Report) Tj",
+    "0 -30 Td",
+    "(Executive Summary:) Tj",
+    "0 -18 Td",
+    "(This coursework analyses algorithm efficiency, time complexity,) Tj",
+    "0 -15 Td",
+    "(and empirical benchmark results across tree structures and hash maps.) Tj",
+    "ET",
+  ].join("\n");
+
+  const streamBytes = Buffer.from(streamContent, "utf-8");
+  const streamLength = streamBytes.length;
+
+  const header = "%PDF-1.4\n";
+  const obj1 = "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n";
+  const obj2 = "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n";
+  const obj3 =
+    "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>\nendobj\n";
+  const obj4Start = `4 0 obj\n<< /Length ${streamLength} >>\nstream\n`;
+  const obj4End = "\nendstream\nendobj\n";
+  const obj5 =
+    "5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n";
+
+  let offset = header.length;
+  const o1 = offset;
+  offset += obj1.length;
+  const o2 = offset;
+  offset += obj2.length;
+  const o3 = offset;
+  offset += obj3.length;
+  const o4 = offset;
+  offset += obj4Start.length + streamLength + obj4End.length;
+  const o5 = offset;
+  offset += obj5.length;
+
+  const startxref = offset;
+
+  function padOffset(n: number): string {
+    return String(n).padStart(10, "0");
+  }
+
+  const xref = [
+    "xref",
+    "0 6",
+    "0000000000 65535 f ",
+    `${padOffset(o1)} 00000 n `,
+    `${padOffset(o2)} 00000 n `,
+    `${padOffset(o3)} 00000 n `,
+    `${padOffset(o4)} 00000 n `,
+    `${padOffset(o5)} 00000 n `,
+    "trailer",
+    "<< /Size 6 /Root 1 0 R >>",
+    "startxref",
+    String(startxref),
+    "%%EOF\n",
+  ].join("\n");
+
+  const parts = [
+    Buffer.from(header, "utf-8"),
+    Buffer.from(obj1, "utf-8"),
+    Buffer.from(obj2, "utf-8"),
+    Buffer.from(obj3, "utf-8"),
+    Buffer.from(obj4Start, "utf-8"),
+    streamBytes,
+    Buffer.from(obj4End, "utf-8"),
+    Buffer.from(obj5, "utf-8"),
+    Buffer.from(xref, "utf-8"),
+  ];
+
+  return Buffer.concat(parts);
+}
 
 // Helper to create a minimal in-memory ZIP buffer with given file entries
 function createZipArchive(files: Record<string, Buffer | string>): Buffer {
@@ -738,18 +829,21 @@ async function test5_RenamedSpreadsheetRejectedAsDocx() {
 }
 
 async function test6_IdempotentFinalizationRetry() {
-  console.log("\n[6/7] Testing idempotent retry of finalisation for same uploaded object...");
+  console.log(
+    "\n[6/7] Testing concurrent first-upload finalisation handler and duplicate P2002 conflict...",
+  );
 
-  const testStudentId = "test-verify-student-retry";
-  const testAssessmentId = "test-verify-assessment-retry";
-  const testProgId = "test-verify-prog-retry";
+  const testStudentId = "test-verify-student-p2002-race";
+  const testAssessmentId = "test-verify-assessment-p2002-race";
+  const testProgId = "test-verify-prog-p2002";
 
+  // Setup isolated programme, student and assessment
   await db.programme.upsert({
     where: { id: testProgId },
     update: {},
     create: {
       id: testProgId,
-      name: "Test Retry Programme",
+      name: "Test P2002 Race Programme",
       defaultFee: "1000.00",
     },
   });
@@ -757,8 +851,8 @@ async function test6_IdempotentFinalizationRetry() {
   await db.student.create({
     data: {
       id: testStudentId,
-      fullName: "Test Retry Student",
-      email: "test.retry@example.com",
+      fullName: "Test P2002 Student",
+      email: "test.p2002@example.com",
       dateOfBirth: new Date("2002-02-02"),
       programmeId: testProgId,
       academicYear: "2026/2027",
@@ -771,11 +865,14 @@ async function test6_IdempotentFinalizationRetry() {
       id: testAssessmentId,
       programmeId: testProgId,
       academicYear: "2026/2027",
-      title: "Retry Test Assessment",
-      module: "CS998 Retry",
-      deadline: new Date(Date.now() + 86400000),
+      title: "P2002 Race Test Assessment",
+      module: "CS998 Concurrency",
+      deadline: new Date(Date.now() + 86400000), // future deadline
     },
   });
+
+  const uniqueFileId = `${Date.now()}-${crypto.randomUUID()}`;
+  const canonicalPath = `submissions/${testStudentId}/${testAssessmentId}/${uniqueFileId}.pdf`;
 
   cleanups.push(async () => {
     await db.result.deleteMany({
@@ -785,57 +882,221 @@ async function test6_IdempotentFinalizationRetry() {
     await db.assessment.deleteMany({ where: { id: testAssessmentId } });
     await db.student.deleteMany({ where: { id: testStudentId } });
     await db.programme.deleteMany({ where: { id: testProgId } });
+    await deleteStorageObject(canonicalPath);
   });
 
-  const canonicalPath = `submissions/${testStudentId}/${testAssessmentId}/12345-abc-def.pdf`;
+  // 1. Upload valid test PDF to private Supabase Storage
+  const samplePdfContent = createValidCourseworkPdfBuffer(
+    "Concurrent Finalisation Coursework",
+    "Test P2002 Student",
+  );
 
-  // First submission
-  const sub = await db.submission.create({
-    data: {
+  const supabase = getSupabaseServerClient();
+  const bucket = getStorageBucketName();
+  const { error: uploadError } = await supabase.storage
+    .from(bucket)
+    .upload(canonicalPath, samplePdfContent, {
+      contentType: "application/pdf",
+      upsert: false,
+    });
+
+  assert.ok(
+    !uploadError,
+    `Failed to upload test file to Supabase storage: ${uploadError?.message}`,
+  );
+
+  // Helper to build a request to the actual finalisation handler
+  function makeSubmitRequest() {
+    return new Request(
+      `http://localhost:3000/api/assessments/${testAssessmentId}/submit`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          cookie: `registry_demo_identity=${encodeURIComponent(
+            JSON.stringify({
+              role: "STUDENT",
+              studentId: testStudentId,
+            }),
+          )}`,
+        },
+        body: JSON.stringify({
+          storagePath: canonicalPath,
+          originalFilename: "coursework_submission.pdf",
+        }),
+      },
+    );
+  }
+
+  // 2. Execute Request 1 to completion. It creates and commits the initial submission.
+  const req1 = makeSubmitRequest();
+  const res1 = await submitFinalisationHandler(req1, {
+    params: Promise.resolve({ id: testAssessmentId }),
+  });
+
+  assert.equal(
+    res1.status,
+    201,
+    `Request 1 should return 201 Created (got ${res1.status}).`,
+  );
+  const data1 = (await res1.json()) as {
+    success: boolean;
+    submission: { id: string };
+  };
+  assert.ok(data1.success, "Request 1 response must be success: true.");
+
+  // 3. Execute Request 2, simulating a racing request that read state before Request 1 committed.
+  // We mock the pre-transaction findUnique and tx.$queryRaw to simulate Request 2 starting concurrently,
+  // so Request 2 proceeds to tx.submission.create.
+  // PostgreSQL throws real P2002 (duplicate key violation on studentId_assessmentId),
+  // forcing Request 2 into the P2002 conflict recovery branch.
+  const originalFindUnique = db.submission.findUnique.bind(db.submission);
+  const originalTransaction = db.$transaction.bind(db);
+
+  try {
+    let preCheckDone = false;
+    (db.submission as unknown as { findUnique: unknown }).findUnique = (async (
+      ...args: Parameters<typeof db.submission.findUnique>
+    ) => {
+      if (!preCheckDone) {
+        preCheckDone = true;
+        // Simulate racing check: no submission seen before transaction starts
+        return null;
+      }
+      return originalFindUnique(...args);
+    }) as unknown;
+
+    (db as unknown as { $transaction: unknown }).$transaction = (async function (
+      fn: (tx: unknown) => Promise<unknown>,
+      options?: unknown,
+    ) {
+      return originalTransaction(async (tx: unknown) => {
+        const txAny = tx as {
+          $queryRaw: (...args: unknown[]) => Promise<unknown>;
+        };
+        const origQueryRaw = txAny.$queryRaw.bind(txAny);
+
+        txAny.$queryRaw = async (...args: unknown[]) => {
+          // If querying Submission for update, return empty array to simulate concurrent race
+          const sql = String(args[0] || "");
+          if (sql.includes("Submission") || args.length > 0) {
+            return [];
+          }
+          return origQueryRaw(...args);
+        };
+
+        return fn(tx);
+      }, options as never);
+    }) as unknown;
+
+    const req2 = makeSubmitRequest();
+    const res2 = await submitFinalisationHandler(req2, {
+      params: Promise.resolve({ id: testAssessmentId }),
+    });
+
+    assert.equal(
+      res2.status,
+      200,
+      `Request 2 (recovering from P2002 conflict) should return 200 OK (got ${res2.status}).`,
+    );
+
+    const data2 = (await res2.json()) as {
+      success: boolean;
+      submission: { id: string };
+    };
+
+    assert.ok(data2.success, "Request 2 response must be success: true.");
+    assert.equal(
+      data1.submission.id,
+      data2.submission.id,
+      "Both requests must return the exact same submission ID.",
+    );
+  } finally {
+    (db.submission as unknown as { findUnique: unknown }).findUnique =
+      originalFindUnique;
+    (db as unknown as { $transaction: unknown }).$transaction =
+      originalTransaction;
+  }
+
+  // Assert only ONE submission row exists in the database
+  const count = await db.submission.count({
+    where: {
       studentId: testStudentId,
       assessmentId: testAssessmentId,
-      storagePath: canonicalPath,
-      originalFilename: "final_work.pdf",
-      size: 2048,
-      submittedAt: new Date(),
-      result: {
-        create: {
-          grade: new Prisma.Decimal("88.00"),
-          publishedAt: new Date(),
-        },
-      },
     },
-    include: { result: true },
   });
+  assert.equal(
+    count,
+    1,
+    "Exactly one submission row must exist in the database.",
+  );
 
-  assert.ok(sub.result);
-  const originalResultId = sub.result.id;
+  // Assert the downloaded file from private storage matches the original bytes
+  const downloadedBuffer = await downloadStorageObjectBuffer(canonicalPath);
+  assert.ok(
+    downloadedBuffer,
+    "Uploaded object must still exist in Storage and must not be deleted by losing request.",
+  );
+  assert.equal(
+    downloadedBuffer.length,
+    samplePdfContent.length,
+    "Downloaded file size must match original file size.",
+  );
+  assert.ok(
+    downloadedBuffer.equals(samplePdfContent),
+    "Downloaded file content must match original bytes exactly.",
+  );
 
-  // Simulate retry finalisation handler logic
-  const existingSub = await db.submission.findUnique({
-    where: {
-      studentId_assessmentId: {
-        studentId: testStudentId,
-        assessmentId: testAssessmentId,
-      },
+  // 4. Assign a grade and verify later retry preserves both file and active grade
+  const winningSubId = data1.submission.id;
+  await db.result.create({
+    data: {
+      submissionId: winningSubId,
+      grade: new Prisma.Decimal("92.50"),
+      publishedAt: new Date(),
     },
-    include: { result: true },
   });
 
-  // Idempotent retry check
-  assert.equal(existingSub?.storagePath, canonicalPath);
-  // Re-verify that records remain untouched
-  const rechecked = await db.submission.findUnique({
-    where: { id: sub.id },
-    include: { result: true },
+  // Perform later retry of finalisation with same path
+  const retryReq = makeSubmitRequest();
+  const retryRes = await submitFinalisationHandler(retryReq, {
+    params: Promise.resolve({ id: testAssessmentId }),
   });
 
-  assert.equal(rechecked?.id, sub.id);
-  assert.equal(rechecked?.result?.id, originalResultId);
-  assert.equal(rechecked?.result?.grade.toFixed(2), "88.00");
-  assert.ok(rechecked?.result?.publishedAt !== null);
+  assert.equal(
+    retryRes.status,
+    200,
+    "Retry of same uploaded object must return 200 OK.",
+  );
+  const retryData = (await retryRes.json()) as {
+    success: boolean;
+    submission: { id: string };
+  };
+  assert.ok(retryData.success);
+  assert.equal(retryData.submission.id, winningSubId);
 
-  console.log("✓ Idempotent finalisation retry passed: grade, file and records preserved.");
+  // Verify grade and publication state are completely preserved
+  const recheckedSub = await db.submission.findUniqueOrThrow({
+    where: { id: winningSubId },
+    include: { result: true },
+  });
+  assert.ok(
+    recheckedSub.result,
+    "Grade result must remain intact after retry.",
+  );
+  assert.equal(
+    recheckedSub.result.grade.toFixed(2),
+    "92.50",
+    "Active grade must not be overwritten or cleared on retry.",
+  );
+  assert.ok(
+    recheckedSub.result.publishedAt !== null,
+    "Publication state must be preserved on retry.",
+  );
+
+  console.log(
+    "✓ Concurrent finalisation and duplicate P2002 conflict passed: single submission created, file bytes intact, active grade preserved.",
+  );
 }
 
 async function test7_StudentMarksheetIsolation() {

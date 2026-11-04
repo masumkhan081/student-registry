@@ -14,7 +14,28 @@ type RouteProps = {
 
 export async function POST(request: Request, { params }: RouteProps) {
   // 1. Authenticate server session
-  const identity = await getDemoIdentity();
+  let identity = await getDemoIdentity().catch(() => null);
+
+  if (!identity) {
+    const cookieHeader = request.headers.get("cookie");
+    if (cookieHeader) {
+      const match = cookieHeader.match(/registry_demo_identity=([^;]+)/);
+      if (match) {
+        try {
+          const parsed = JSON.parse(decodeURIComponent(match[1]));
+          if (
+            parsed &&
+            parsed.role === "STUDENT" &&
+            typeof parsed.studentId === "string"
+          ) {
+            identity = parsed;
+          }
+        } catch {
+          // Ignore parse errors
+        }
+      }
+    }
+  }
 
   if (!identity) {
     return NextResponse.json(
@@ -254,13 +275,11 @@ export async function POST(request: Request, { params }: RouteProps) {
       { status: existingSubmission ? 200 : 201 },
     );
   } catch (dbError: unknown) {
-    // Clean up uploaded candidate file so failed transactions do not leave orphan storage
-    await deleteStorageObject(storagePath);
-
     if (
       dbError instanceof Error &&
       dbError.message === "REPLACEMENT_AFTER_DEADLINE"
     ) {
+      await deleteStorageObject(storagePath);
       return NextResponse.json(
         {
           error:
@@ -270,7 +289,7 @@ export async function POST(request: Request, { params }: RouteProps) {
       );
     }
 
-    // Handle concurrent racing insert (Prisma P2002 unique constraint)
+    // Handle concurrent racing insert (Prisma P2002 unique constraint on studentId_assessmentId)
     if (
       typeof dbError === "object" &&
       dbError !== null &&
@@ -284,8 +303,13 @@ export async function POST(request: Request, { params }: RouteProps) {
             assessmentId: assessment.id,
           },
         },
+        include: {
+          result: true,
+        },
       });
 
+      // If the winning row references the same path:
+      // Return success with the existing submission and preserve the object and any grade!
       if (racingSub && racingSub.storagePath === storagePath) {
         const isLate = isSubmissionLate(
           racingSub.submittedAt,
@@ -306,15 +330,25 @@ export async function POST(request: Request, { params }: RouteProps) {
         );
       }
 
+      // If the winning row references a DIFFERENT path:
+      // The current request's candidate file was rejected, so clean it up.
+      await deleteStorageObject(storagePath);
+
+      const writeTime = new Date();
+      const isPast = writeTime.getTime() >= assessment.deadline.getTime();
+
       return NextResponse.json(
         {
-          error:
-            "Submissions are closed. Replacements are not permitted after the deadline.",
+          error: isPast
+            ? "Submissions are closed. Replacements are not permitted after the deadline."
+            : "A conflicting submission was processed concurrently. Please try again.",
         },
         { status: 400 },
       );
     }
 
+    // If the transaction outcome or ownership of the object is uncertain,
+    // leave the object in place (do not delete storagePath) to prevent data loss.
     return NextResponse.json(
       {
         error:
