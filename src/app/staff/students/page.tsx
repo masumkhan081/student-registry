@@ -6,7 +6,6 @@ import { getDemoIdentity } from "@/lib/demo-session";
 import {
   formatStudentId,
   formatEnrolmentStatus,
-  ENROLMENT_STATUS_OPTIONS,
 } from "@/features/students/format";
 import { parseStudentFilters } from "@/features/students/schema";
 import {
@@ -14,6 +13,9 @@ import {
   getStudentsDirectory,
   type DirectoryStudent,
 } from "@/features/students/queries";
+import { StudentDirectoryFilters } from "@/features/students/student-directory-filters";
+import { StudentRowActions } from "@/features/students/student-row-actions";
+import { calculateFeeSummary } from "@/features/fees/calculations";
 import type { EnrolmentStatus } from "@/generated/prisma/enums";
 
 export const metadata: Metadata = {
@@ -61,7 +63,7 @@ async function StaffStudentsContent({
   const rawParams = await searchParams;
   const filters = parseStudentFilters(rawParams);
 
-  // 3. Query filter options and students from PostgreSQL
+  // 3. Query filter options and students from PostgreSQL in a single round-trip
   const [programmes, students] = await Promise.all([
     getProgrammeFilterOptions(),
     getStudentsDirectory(filters),
@@ -129,99 +131,13 @@ async function StaffStudentsContent({
         </div>
       )}
 
-      {/* Native GET filter form */}
-      <section
-        aria-labelledby="filters-heading"
-        className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm"
-      >
-        <h2 id="filters-heading" className="sr-only">
-          Filter students
-        </h2>
-        <form
-          method="GET"
-          action="/staff/students"
-          className="space-y-4"
-        >
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            <div>
-              <label
-                htmlFor="search"
-                className="block text-sm font-medium text-slate-700"
-              >
-                Search
-              </label>
-              <input
-                id="search"
-                name="search"
-                type="search"
-                defaultValue={filters.search ?? ""}
-                placeholder="Name or SMS-2026-0001"
-                className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-              />
-            </div>
-
-            <div>
-              <label
-                htmlFor="programme"
-                className="block text-sm font-medium text-slate-700"
-              >
-                Programme
-              </label>
-              <select
-                id="programme"
-                name="programme"
-                defaultValue={filters.programme ?? ""}
-                className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-              >
-                <option value="">All programmes</option>
-                {programmes.map((programme) => (
-                  <option key={programme.id} value={programme.id}>
-                    {programme.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label
-                htmlFor="status"
-                className="block text-sm font-medium text-slate-700"
-              >
-                Enrolment status
-              </label>
-              <select
-                id="status"
-                name="status"
-                defaultValue={filters.status ?? ""}
-                className="mt-1 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-              >
-                <option value="">All statuses</option>
-                {ENROLMENT_STATUS_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-4 pt-2">
-            <button
-              type="submit"
-              className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-slate-800"
-            >
-              Apply
-            </button>
-
-            <Link
-              href="/staff/students"
-              className="text-sm font-medium text-slate-600 underline underline-offset-4 hover:text-slate-900"
-            >
-              Clear filters
-            </Link>
-          </div>
-        </form>
-      </section>
+      {/* Live search and filters (300ms debounce, immediate selects, keyboard focus preserved) */}
+      <StudentDirectoryFilters
+        initialSearch={filters.search ?? ""}
+        initialProgramme={filters.programme ?? ""}
+        initialStatus={filters.status ?? ""}
+        programmes={programmes}
+      />
 
       {/* Results Table or Empty State */}
       {students.length === 0 ? (
@@ -251,81 +167,103 @@ async function StaffStudentsContent({
         </section>
       ) : (
         <section aria-label="Student records">
-          <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
-            <table className="min-w-full divide-y divide-slate-200 text-left text-sm text-slate-700">
-              <caption className="sr-only">
-                Directory of enrolled students
-              </caption>
-              <thead className="bg-slate-50 text-xs font-semibold uppercase text-slate-600">
-                <tr>
-                  <th scope="col" className="px-6 py-3.5">
-                    Student ID
-                  </th>
-                  <th scope="col" className="px-6 py-3.5">
-                    Full name
-                  </th>
-                  <th scope="col" className="px-6 py-3.5">
-                    Programme
-                  </th>
-                  <th scope="col" className="px-6 py-3.5">
-                    Academic year
-                  </th>
-                  <th scope="col" className="px-6 py-3.5">
-                    Enrolment status
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200 bg-white">
-                {students.map((student: DirectoryStudent) => {
-                  const formattedId = formatStudentId(
-                    student.enrolmentYear,
-                    student.studentNumber,
-                  );
-                  const isHighlighted =
-                    enrolledId &&
-                    (formattedId === enrolledId || student.id === enrolledId);
+          <div className="overflow-visible rounded-xl border border-slate-200 bg-white shadow-sm">
+            <div className="overflow-x-auto rounded-xl">
+              <table className="min-w-full divide-y divide-slate-200 text-left text-sm text-slate-700">
+                <caption className="sr-only">
+                  Directory of enrolled students
+                </caption>
+                <thead className="bg-slate-50 text-xs font-semibold uppercase text-slate-600">
+                  <tr>
+                    <th scope="col" className="px-6 py-3.5">
+                      Student ID
+                    </th>
+                    <th scope="col" className="px-6 py-3.5">
+                      Full name
+                    </th>
+                    <th scope="col" className="px-6 py-3.5">
+                      Programme
+                    </th>
+                    <th scope="col" className="px-6 py-3.5">
+                      Academic year
+                    </th>
+                    <th scope="col" className="px-6 py-3.5">
+                      Enrolment status
+                    </th>
+                    <th scope="col" className="px-6 py-3.5 text-right">
+                      Actions
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200 bg-white">
+                  {students.map((student: DirectoryStudent) => {
+                    const formattedId = formatStudentId(
+                      student.enrolmentYear,
+                      student.studentNumber,
+                    );
+                    const isHighlighted =
+                      enrolledId &&
+                      (formattedId === enrolledId || student.id === enrolledId);
 
-                  return (
-                    <tr
-                      key={student.id}
-                      className={
-                        isHighlighted
-                          ? "bg-emerald-50/70 hover:bg-emerald-50"
-                          : "hover:bg-slate-50/75"
-                      }
-                    >
-                      <td className="whitespace-nowrap px-6 py-4 font-mono font-medium text-slate-900">
-                        {formattedId}
-                        {isHighlighted && (
-                          <span className="ml-2 inline-flex items-center rounded-md bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-800">
-                            Newly enrolled
+                    // Reuses existing balance calculation without extra DB queries per row
+                    const hasOutstandingBalance = Boolean(
+                      student.feeAssignment &&
+                        calculateFeeSummary(
+                          student.feeAssignment.amount,
+                          student.feeAssignment.payments,
+                          student.feeAssignment.dueDate,
+                        ).balanceCents > 0,
+                    );
+
+                    return (
+                      <tr
+                        key={student.id}
+                        className={
+                          isHighlighted
+                            ? "bg-emerald-50/70 hover:bg-emerald-50"
+                            : "hover:bg-slate-50/75"
+                        }
+                      >
+                        <td className="whitespace-nowrap px-6 py-4 font-mono font-medium text-slate-900">
+                          {formattedId}
+                          {isHighlighted && (
+                            <span className="ml-2 inline-flex items-center rounded-md bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-800">
+                              Newly enrolled
+                            </span>
+                          )}
+                        </td>
+                        <td className="whitespace-nowrap px-6 py-4 font-medium text-slate-900">
+                          <Link
+                            href={`/staff/students/${student.id}`}
+                            className="font-semibold text-slate-900 underline underline-offset-4 hover:text-blue-600"
+                          >
+                            {student.fullName}
+                          </Link>
+                        </td>
+                        <td className="whitespace-nowrap px-6 py-4 text-slate-600">
+                          {student.programme.name}
+                        </td>
+                        <td className="whitespace-nowrap px-6 py-4 text-slate-600">
+                          {student.academicYear}
+                        </td>
+                        <td className="whitespace-nowrap px-6 py-4">
+                          <span className={getStatusBadgeClass(student.status)}>
+                            {formatEnrolmentStatus(student.status)}
                           </span>
-                        )}
-                      </td>
-                      <td className="whitespace-nowrap px-6 py-4 font-medium text-slate-900">
-                        <Link
-                          href={`/staff/students/${student.id}`}
-                          className="font-semibold text-slate-900 underline underline-offset-4 hover:text-blue-600"
-                        >
-                          {student.fullName}
-                        </Link>
-                      </td>
-                      <td className="whitespace-nowrap px-6 py-4 text-slate-600">
-                        {student.programme.name}
-                      </td>
-                      <td className="whitespace-nowrap px-6 py-4 text-slate-600">
-                        {student.academicYear}
-                      </td>
-                      <td className="whitespace-nowrap px-6 py-4">
-                        <span className={getStatusBadgeClass(student.status)}>
-                          {formatEnrolmentStatus(student.status)}
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                        </td>
+                        <td className="whitespace-nowrap px-6 py-4 text-right">
+                          <StudentRowActions
+                            studentId={student.id}
+                            studentName={student.fullName}
+                            hasOutstandingBalance={hasOutstandingBalance}
+                          />
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         </section>
       )}

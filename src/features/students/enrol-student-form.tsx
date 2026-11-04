@@ -29,6 +29,7 @@ export function EnrolStudentForm({ programmes }: Props) {
     register,
     control,
     handleSubmit,
+    reset,
     setError,
     clearErrors,
     formState: { errors, isSubmitting },
@@ -93,6 +94,8 @@ export function EnrolStudentForm({ programmes }: Props) {
         ? `/staff/students?search=${encodeURIComponent(formattedId)}&enrolled=${encodeURIComponent(formattedId)}`
         : "/staff/students";
 
+      // Reset form to clean default values so reopening shows fresh defaults
+      reset();
       router.push(targetUrl);
       router.refresh();
     } catch {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -58,6 +58,14 @@ export function StudentFeeSection({
       reference: "",
     },
   });
+
+  // Auto-focus payment amount field if navigation hash is #record-payment
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.location.hash === "#record-payment") {
+      const amountInput = document.getElementById("payment-amount");
+      amountInput?.focus();
+    }
+  }, []);
 
   // Calculate live summary using decimal-safe arithmetic
   const summary = calculateFeeSummary(
@@ -203,7 +211,10 @@ export function StudentFeeSection({
       </div>
 
       {/* Record Payment Section */}
-      <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+      <div
+        id="record-payment"
+        className="scroll-mt-6 rounded-xl border border-slate-200 bg-white p-6 shadow-sm"
+      >
         <h3 className="text-base font-semibold text-slate-900">
           Record Payment
         </h3>

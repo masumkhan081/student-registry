@@ -76,6 +76,17 @@ export async function getStudentsDirectory(filters: StudentFilters) {
           name: true,
         },
       },
+      feeAssignment: {
+        select: {
+          amount: true,
+          dueDate: true,
+          payments: {
+            select: {
+              amount: true,
+            },
+          },
+        },
+      },
     },
     orderBy: {
       studentNumber: "asc",

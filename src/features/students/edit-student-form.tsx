@@ -71,6 +71,15 @@ export function EditStudentForm({ student, programmes }: Props) {
       status: student.status,
       dueDate: student.feeAssignment?.dueDate ?? "",
     },
+    values: {
+      fullName: student.fullName,
+      email: student.email,
+      dateOfBirth: student.dateOfBirth,
+      programmeId: student.programmeId,
+      academicYear: student.academicYear,
+      status: student.status,
+      dueDate: student.feeAssignment?.dueDate ?? "",
+    },
   });
 
   const selectedProgrammeId = useWatch({ control, name: "programmeId" });

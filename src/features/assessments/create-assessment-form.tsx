@@ -26,6 +26,7 @@ export function CreateAssessmentForm({ programmes }: Props) {
   const {
     register,
     handleSubmit,
+    reset,
     setError,
     clearErrors,
     formState: { errors, isSubmitting },
@@ -74,7 +75,8 @@ export function CreateAssessmentForm({ programmes }: Props) {
         return;
       }
 
-      // Success: Redirect to staff assessments directory
+      // Success: Reset form to clean defaults and redirect to staff assessments directory
+      reset();
       router.push("/staff/assessments?created=true");
       router.refresh();
     } catch {

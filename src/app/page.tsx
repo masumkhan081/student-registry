@@ -4,6 +4,7 @@ import { DemoAccessForm } from "@/features/demo/demo-access-form";
 import { demoStudentIds } from "@/features/demo/demo-students";
 
 async function DemoAccess() {
+  
   const students = await db.student.findMany({
     where: { id: { in: demoStudentIds } },
     select: { id: true, fullName: true },
