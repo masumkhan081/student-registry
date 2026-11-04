@@ -1,6 +1,9 @@
 # Student Registry
 
-A focused student registry application for a technical assessment.
+A full-stack student registry application with programme fee management, coursework submission, and grading built with Next.js App Router, TypeScript, Prisma 7, PostgreSQL, and private Supabase Storage.
+
+- **Production Deployment**: [https://student-registry-masumkhan081.vercel.app](https://student-registry-masumkhan081.vercel.app)
+- **Repository**: [https://github.com/masumkhan081/student-registry](https://github.com/masumkhan081/student-registry)
 
 ## Scope
 
@@ -106,11 +109,146 @@ Each milestone will be committed after its behaviour is verified.
 ## AI assistance
 
 AI has been used across the development process:
-- Initial project analysis, requirement scoping, and data model drafting.
-- Student directory implementation: Designing search parameter handling, index-backed exact student ID lookup vs case-insensitive name matching, and Partial Prerendering Suspense boundaries.
-- Student enrolment workflow: Designing shared Zod validation (date-only calendar checks, non-future DOB, consecutive academic year format), atomic transaction boundary for `Student` and `FeeAssignment` creation, server-side derivation of calendar `enrolmentYear` (assigning SMS-2026-… for enrolments entered in 2026 even when backdated to 2025/2026), read-only fee display with `useWatch`, and mapping PostgreSQL uniqueness conflicts (`P2002`) to HTTP 409 for concurrency safety.
-- Code review and verification: Running automated validation scripts and ensuring strict TypeScript compliance without explicit `any`.
+- **Planning & Requirement Scoping (ChatGPT)**: Initial project analysis, requirement decomposition across the four core workflows, and relational data model drafting.
+- **Implementation & Verification (Gemini via Google Antigravity)**: Next.js App Router implementation, PostgreSQL transaction row locking (`SELECT ... FOR UPDATE`) to eliminate race conditions on payments and grading, private Supabase Storage upload flow with magic-byte and OpenXML ZIP inspection, accessible live directory filtering with keyboard navigation, and the automated verification suite.
+- **Concrete Issues Caught and Fixed by AI**:
+  1. *Deadline Boundary Discrepancy*: `isSubmissionLate` originally evaluated `submittedAt.getTime() > deadline.getTime()`, which erroneously treated exact-deadline submissions as on-time. Antigravity flagged this and aligned the shared logic across API, UI badges, and tests to strictly enforce `submittedAt >= deadline`.
+  2. *ZIP Bomb & Manifest Decompression Vulnerability*: The initial DOCX parser decompressed `[Content_Types].xml` without bounding output memory. Antigravity implemented `maxOutputLength: 1024 * 1024` (1 MiB) via `node:zlib` alongside uncompressed size header checks to safely reject malformed archives and decompression bombs.
+  3. *Invalid Coursework PDF Fixture*: The initial hand-crafted PDF string in `seed.ts` omitted font resource dictionaries (`/Resources << /Font ... >>`), causing PDF viewers to render blank documents. Antigravity replaced this with a valid PDF 1.4 generator declaring a Type 1 Helvetica font dictionary and exact cross-reference byte offsets.
+  4. *Atomic Grading Conflict*: Identified a time-of-check to time-of-use race where staff could save an obsolete grade over a newly replaced submission file. Introduced row-level locks on `Submission` and `Result` alongside `submissionUpdatedAt` and `expectedResultUpdatedAt` concurrency checks returning HTTP 409 Conflict.
 
 ## Setup and reviewer walkthrough
 
-To be added as the application is implemented.
+### Deployment
+- **Production URL**: `https://student-registry-masumkhan081.vercel.app` (or your configured Vercel deployment domain)
+- **Repository**: `https://github.com/masumkhan081/student-registry`
+
+### Environment Variables
+Environment configuration must precede `npm ci` so that Prisma Client can be compiled during `postinstall`. Create a `.env` file from `.env.example`:
+
+| Variable | Scope | Description |
+| :--- | :--- | :--- |
+| `DATABASE_URL` | Server-only | Pooled PostgreSQL connection string for Prisma ORM |
+| `DIRECT_URL` | Server-only | Direct PostgreSQL connection string for migrations |
+| `SUPABASE_URL` | Server-only / Client | Supabase project API URL (e.g. `https://xyz.supabase.co`) |
+| `NEXT_PUBLIC_SUPABASE_URL` | Browser-accessible | Fallback public project URL for client-side storage helpers |
+| `SUPABASE_SECRET_KEY` | Server-only | Supabase service-role secret key (never expose to browser) |
+| `SUPABASE_STORAGE_BUCKET` | Server-only | Name of private storage bucket (defaults to `sms`) |
+
+> [!IMPORTANT]
+> The Supabase Storage bucket (`sms`) must be configured as a **private** bucket. Coursework files are uploaded using short-lived signed upload URLs and downloaded strictly through authenticated server-side API routes (`/api/submissions/[id]/download`) that enforce student ownership or staff authorization.
+
+### Local Installation & Setup
+
+1. **Clone repository & enter directory**:
+   ```bash
+   git clone https://github.com/masumkhan081/student-registry.git
+   cd student-registry
+   ```
+
+2. **Configure environment**:
+   ```bash
+   cp .env.example .env
+   # Populate DATABASE_URL, DIRECT_URL, SUPABASE_URL, and SUPABASE_SECRET_KEY in .env
+   ```
+
+3. **Install dependencies**:
+   ```bash
+   npm ci
+   # postinstall automatically generates Prisma Client (prisma generate)
+   ```
+
+4. **Apply database migrations**:
+   ```bash
+   npx prisma migrate deploy
+   ```
+
+5. **Seed demo data (idempotent & reviewer-safe)**:
+   ```bash
+   npm run db:seed
+   ```
+   *The seed script populates 2 programmes, 5 students, initial fee assignments, partial/complete payments, assessments, and valid PDF submissions with grades. Rerunning `db:seed` preserves existing reviewer-created submissions, grades, and payments.*
+
+6. **Start development server**:
+   ```bash
+   npm run dev
+   ```
+   Open `http://localhost:3000` in your browser.
+
+---
+
+### Automated Verification Suite
+
+Run the end-to-end verification script testing all critical recruiter edge cases:
+```bash
+npm test
+```
+The automated test verifies:
+1. **Concurrent Payments**: Two simultaneous £70 payments against a £100 balance serialize via row locks (`SELECT ... FOR UPDATE`); exactly one succeeds and the remaining balance is £30.
+2. **Seed Rerun Preservation**: Running `prisma db seed` does not overwrite student uploads, staff grades, or publication states.
+3. **Atomic Grading & Concurrency Races**: Replaced student files return HTTP 409 to in-flight grade forms; grade changes return 409 to stale publish actions; unchanged saves preserve publication; new grades save as withheld; replaced files wipe prior results.
+4. **Exact Deadline Equality**: Submissions at `submittedAt >= deadline` are flagged as Late; `< deadline` are On time.
+5. **DOCX Security & Magic Bytes**: Renamed spreadsheets (.xlsx renamed to .docx) are rejected; genuine DOCX with OpenXML manifests pass; manifests exceeding 1 MiB are cleanly rejected.
+6. **Idempotent Retry**: Submitting the same uploaded object twice is idempotent and preserves active grades and storage files.
+7. **Marksheet Response Isolation**: Student marksheet queries strictly exclude withheld grades and peer submissions.
+
+Additional quality checks:
+```bash
+npm run check    # Linter (ESLint zero warnings) + strict TypeScript check
+npm run build    # Optimized Next.js production build with Turbopack & Partial Prerendering
+```
+
+---
+
+### Recruiter Walkthrough: The 4 Core Workflows
+
+Use the demo identity switcher in the top navigation banner to switch between **Registry Staff** and seeded **Students**.
+
+#### Workflow 1: Student Enrolment & Directory Search
+1. As **Registry Staff**, navigate to **Staff → Students** (`/staff/students`).
+2. Test **Live Search**: Type into the search input. Results update automatically ~300 ms after typing stops without losing focus or reloading the page.
+3. Filter by **Programme** (e.g. *BSc Computing*) and **Status** (e.g. *Enrolled*). Notice filter parameters are reflected in shareable URL query parameters.
+4. Test **Accessible Row Actions**: Click the `⋮` action menu on any student row (e.g. *Ava Morgan* or *Noah Patel*). Test keyboard navigation (`ArrowDown`, `Escape` to close).
+5. Select **Enrol new student** (`/staff/students/new`), fill out the validated form with calendar birthdate, consecutive academic year (`2026/2027`), and select a programme. On submission, the server derives `studentNumber`, assigns the programme fee, and redirects to the new student record.
+
+#### Workflow 2: Programme Fees & Payments
+1. In the Student Directory, click **Record payment** on a student with an outstanding balance (e.g. *Ava Morgan*, balance £4,000). The link navigates directly to the payment section anchor (`#record-payment`).
+2. Enter a payment amount (e.g. `£1,000.00`) with a reference (e.g. `CARD-2026-001`).
+3. Notice:
+   - Payments exceeding the remaining balance are rejected client-side and server-side.
+   - Duplicate references within the same fee assignment are rejected.
+   - Overdue badges appear automatically when an outstanding balance exists past the due date.
+
+#### Workflow 3: Assessments & Private Coursework Submission
+1. Switch demo identity to **Ava Morgan (Student)**.
+2. Navigate to **My assessments** (`/student/assessments`).
+3. Under the upcoming *Web Applications Project*, click **Submit coursework**.
+4. Upload a valid coursework document (`.pdf` or `.docx`, max 10 MB).
+5. Notice:
+   - The file is uploaded directly to private storage using a short-lived signed URL.
+   - The server validates the magic bytes and ZIP structure before finalizing.
+   - Because the deadline is in the future, Ava can replace her file prior to the deadline.
+6. Check past assessments: First late submissions are accepted and badged as **Late** (`submittedAt >= deadline`); replacements after the deadline are disabled.
+
+#### Workflow 4: Staff Grading & Student Marksheet
+1. Switch identity back to **Registry Staff** and navigate to **Staff → Assessments** (`/staff/assessments`).
+2. Click **View submissions** on *Algorithms & Data Structures Coursework* (`/staff/assessments/demo-assessment-computing-past/submissions`).
+3. Inspect submitted work:
+   - *Noah Patel*: Grade `82.00` · **Distinction** · **Published** (downloadable valid PDF coursework).
+   - *Mia Clarke*: Grade `65.50` · **Merit** · **Withheld**.
+4. Test Grading Actions:
+   - Click **Publish** on Mia Clarke's result. Status changes to Published.
+   - Edit a grade: Notice that changing a published grade automatically withholds it again until explicitly re-published.
+   - Saving an unchanged grade preserves the Published state.
+   - The form enforces numeric grades 0 to 100 with at most two decimal places.
+5. Switch identity to **Noah Patel (Student)** and click **My marksheet** (`/student/marksheet`):
+   - Noah sees only his published results (*82.00 · Distinction*).
+6. Switch identity to **Mia Clarke (Student)**:
+   - When withheld, Mia's marksheet displays "No results published yet" and does not leak unreleased grades. Once staff clicks Publish, her marksheet immediately displays the result.
+
+---
+
+### Intentional Demo-Mode Boundaries & Limitations
+- **Demo Identity Selector**: Role-based access uses a signed server-side cookie (`demo-role-session`) rather than a full auth provider (NextAuth / Auth0) to facilitate frictionless, instant recruiter review.
+- **Single Active Submission**: Each student has one active submission per assessment; replacements supersede previous uploads and safely remove unlinked storage objects.
+- **Isolated Sandboxed Seed**: Rerunning `db:seed` preserves existing submissions and payments created during manual review.
