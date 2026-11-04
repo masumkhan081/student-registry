@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { getDemoIdentity } from "@/lib/demo-session";
 import { db } from "@/lib/db";
 import {
   inspectAndValidateStoredFile,
   deleteStorageObject,
 } from "@/lib/storage";
+import { isSubmissionLate } from "@/features/assessments/format";
 
 type RouteProps = {
   params: Promise<{ id: string }>;
@@ -78,7 +80,7 @@ export async function POST(request: Request, { params }: RouteProps) {
     );
   }
 
-  // 5. Parse request body
+  // 5. Parse and validate request body with Zod before ANY privileged Storage read or delete
   let body: unknown;
   try {
     body = await request.json();
@@ -89,41 +91,35 @@ export async function POST(request: Request, { params }: RouteProps) {
     );
   }
 
-  const { storagePath, originalFilename } = body as {
-    storagePath?: string;
-    originalFilename?: string;
-  };
+  const submitBodySchema = z.object({
+    storagePath: z
+      .string()
+      .trim()
+      .regex(
+        new RegExp(
+          `^submissions\\/${student.id}\\/${assessment.id}\\/\\d+-[0-9a-fA-F-]+\\.(pdf|docx)$`,
+        ),
+        "Invalid or non-canonical storage path.",
+      ),
+    originalFilename: z
+      .string()
+      .trim()
+      .min(1, "Filename is required.")
+      .max(255, "Filename is too long."),
+  });
 
-  if (!storagePath || typeof storagePath !== "string") {
-    return NextResponse.json(
-      { error: "storagePath is required." },
-      { status: 400 },
-    );
+  const parsed = submitBodySchema.safeParse(body);
+  if (!parsed.success) {
+    const firstError =
+      parsed.error.issues[0]?.message || "Invalid submission parameters.";
+    return NextResponse.json({ error: firstError }, { status: 400 });
   }
 
-  // Never trust a path supplied from the browser that does not belong to this student & assessment
-  const expectedPrefix = `submissions/${student.id}/${assessment.id}/`;
-  if (!storagePath.startsWith(expectedPrefix)) {
-    return NextResponse.json(
-      { error: "Unauthorized or invalid storage path." },
-      { status: 403 },
-    );
-  }
+  const { storagePath, originalFilename } = parsed.data;
+  const sanitizedFilename = originalFilename.replace(/[/\\]/g, "");
 
-  const sanitizedFilename = (originalFilename || "submission.pdf")
-    .trim()
-    .replace(/[/\\]/g, "")
-    .slice(0, 255);
-
-  if (!sanitizedFilename) {
-    return NextResponse.json(
-      { error: "Filename is required." },
-      { status: 400 },
-    );
-  }
-
-  // 6. Check existing submission & deadline rules
-  const now = new Date();
+  // 6. Fast idempotent retry check: if this exact object path is already the active submission,
+  // return success immediately without modifying records, wiping grades, or re-inspecting storage.
   const existingSubmission = await db.submission.findUnique({
     where: {
       studentId_assessmentId: {
@@ -136,11 +132,11 @@ export async function POST(request: Request, { params }: RouteProps) {
     },
   });
 
-  // Idempotent retry: if this exact object path is already the active submission,
-  // return success immediately without modifying records, wiping grades, or deleting storage.
   if (existingSubmission && existingSubmission.storagePath === storagePath) {
-    const isLate =
-      existingSubmission.submittedAt.getTime() > assessment.deadline.getTime();
+    const isLate = isSubmissionLate(
+      existingSubmission.submittedAt,
+      assessment.deadline,
+    );
     return NextResponse.json(
       {
         success: true,
@@ -156,19 +152,7 @@ export async function POST(request: Request, { params }: RouteProps) {
     );
   }
 
-  // Replacements with a different file are allowed strictly before the deadline
-  if (existingSubmission && now.getTime() >= assessment.deadline.getTime()) {
-    await deleteStorageObject(storagePath);
-    return NextResponse.json(
-      {
-        error:
-          "Submissions are closed. Replacements are not permitted after the deadline.",
-      },
-      { status: 400 },
-    );
-  }
-
-  // 7. Verify uploaded object in Storage: existence, size <= 10 MiB, real magic bytes
+  // 7. Verify uploaded candidate object in Storage: existence, size <= 10 MiB, real magic bytes
   const inspection = await inspectAndValidateStoredFile(storagePath);
   if (!inspection.isValid) {
     await deleteStorageObject(storagePath);
@@ -178,43 +162,45 @@ export async function POST(request: Request, { params }: RouteProps) {
     );
   }
 
-  // 8. Database transaction: concurrency-safe single row per student/assessment
+  // 8. Database transaction: concurrency-safe row lock and atomic write
   let oldStoragePathToDelete: string | null = null;
 
   try {
     const { submission } = await db.$transaction(async (tx) => {
-      // Re-query inside transaction to protect against concurrent racing requests
-      const current = await tx.submission.findUnique({
-        where: {
-          studentId_assessmentId: {
-            studentId: student.id,
-            assessmentId: assessment.id,
-          },
-        },
-        include: {
-          result: true,
-        },
-      });
+      // Row-level lock on Submission to serialize concurrent replacement and grading
+      const lockedRows = await tx.$queryRaw<
+        Array<{ id: string; storagePath: string; updatedAt: Date }>
+      >`
+        SELECT id, "storagePath", "updatedAt" FROM "Submission"
+        WHERE "studentId" = ${student.id} AND "assessmentId" = ${assessment.id}
+        FOR UPDATE
+      `;
 
-      if (current) {
-        // Case A: Concurrent identical retry that already committed
+      // Re-evaluate server write time at the final write decision inside the transaction
+      const writeTime = new Date();
+
+      if (lockedRows.length > 0) {
+        const current = lockedRows[0];
+
+        // Case A: Concurrent identical retry that committed while we waited
         if (current.storagePath === storagePath) {
-          return { submission: current, isIdempotent: true };
+          const active = await tx.submission.findUniqueOrThrow({
+            where: { id: current.id },
+          });
+          return { submission: active, isIdempotent: true };
         }
 
         // Case B: A different file exists - check if replacing after deadline
-        if (now.getTime() >= assessment.deadline.getTime()) {
+        if (writeTime.getTime() >= assessment.deadline.getTime()) {
           throw new Error("REPLACEMENT_AFTER_DEADLINE");
         }
 
         oldStoragePathToDelete = current.storagePath;
 
-        // Valid replacement before deadline: remove existing Result in same transaction
-        if (current.result) {
-          await tx.result.delete({
-            where: { id: current.result.id },
-          });
-        }
+        // Valid replacement strictly before deadline: remove existing Result in same transaction
+        await tx.result.deleteMany({
+          where: { submissionId: current.id },
+        });
 
         const updated = await tx.submission.update({
           where: { id: current.id },
@@ -222,7 +208,7 @@ export async function POST(request: Request, { params }: RouteProps) {
             storagePath,
             originalFilename: sanitizedFilename,
             size: inspection.size,
-            submittedAt: now,
+            submittedAt: writeTime,
           },
         });
 
@@ -237,7 +223,7 @@ export async function POST(request: Request, { params }: RouteProps) {
           storagePath,
           originalFilename: sanitizedFilename,
           size: inspection.size,
-          submittedAt: now,
+          submittedAt: writeTime,
         },
       });
 
@@ -249,8 +235,10 @@ export async function POST(request: Request, { params }: RouteProps) {
       await deleteStorageObject(oldStoragePathToDelete);
     }
 
-    const isLate =
-      submission.submittedAt.getTime() > assessment.deadline.getTime();
+    const isLate = isSubmissionLate(
+      submission.submittedAt,
+      assessment.deadline,
+    );
 
     return NextResponse.json(
       {
@@ -266,11 +254,13 @@ export async function POST(request: Request, { params }: RouteProps) {
       { status: existingSubmission ? 200 : 201 },
     );
   } catch (dbError: unknown) {
+    // Clean up uploaded candidate file so failed transactions do not leave orphan storage
+    await deleteStorageObject(storagePath);
+
     if (
       dbError instanceof Error &&
       dbError.message === "REPLACEMENT_AFTER_DEADLINE"
     ) {
-      await deleteStorageObject(storagePath);
       return NextResponse.json(
         {
           error:
@@ -297,8 +287,10 @@ export async function POST(request: Request, { params }: RouteProps) {
       });
 
       if (racingSub && racingSub.storagePath === storagePath) {
-        const isLate =
-          racingSub.submittedAt.getTime() > assessment.deadline.getTime();
+        const isLate = isSubmissionLate(
+          racingSub.submittedAt,
+          assessment.deadline,
+        );
         return NextResponse.json(
           {
             success: true,
@@ -314,20 +306,14 @@ export async function POST(request: Request, { params }: RouteProps) {
         );
       }
 
-      await deleteStorageObject(storagePath);
       return NextResponse.json(
         {
           error:
-            now.getTime() >= assessment.deadline.getTime()
-              ? "Submissions are closed. Replacements are not permitted after the deadline."
-              : "A conflicting submission was processed concurrently. Please try again.",
+            "Submissions are closed. Replacements are not permitted after the deadline.",
         },
         { status: 400 },
       );
     }
-
-    // If any other error occurs, clean up the newly uploaded file to avoid orphaned storage
-    await deleteStorageObject(storagePath);
 
     return NextResponse.json(
       {

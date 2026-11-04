@@ -92,11 +92,12 @@ export function isPastDeadline(
 ): boolean {
   const deadline =
     typeof deadlineInput === "string" ? new Date(deadlineInput) : deadlineInput;
-  return deadline.getTime() < now.getTime();
+  return now.getTime() >= deadline.getTime();
 }
 
 /**
- * Check if a submission was submitted after the deadline.
+ * Check if a submission was submitted at or after the deadline.
+ * submittedAt >= deadline is Late.
  */
 export function isSubmissionLate(
   submittedAtInput: Date | string,
@@ -108,7 +109,7 @@ export function isSubmissionLate(
       : submittedAtInput;
   const deadline =
     typeof deadlineInput === "string" ? new Date(deadlineInput) : deadlineInput;
-  return submittedAt.getTime() > deadline.getTime();
+  return submittedAt.getTime() >= deadline.getTime();
 }
 
 /**

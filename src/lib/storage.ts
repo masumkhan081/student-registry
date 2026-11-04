@@ -178,6 +178,14 @@ export function validateDocxArchive(buf: Buffer): {
   }
 
   // Check 3: Extract and inspect [Content_Types].xml for DOCX main document content type
+  const MAX_MANIFEST_SIZE = 1024 * 1024; // 1 MiB bound for manifest decompression
+  if (contentTypesEntry.uncompSize > MAX_MANIFEST_SIZE) {
+    return {
+      isValid: false,
+      error: "The package [Content_Types].xml exceeds maximum allowable manifest size.",
+    };
+  }
+
   let contentTypesText = "";
   try {
     const lo = contentTypesEntry.localOffset;
@@ -189,9 +197,17 @@ export function validateDocxArchive(buf: Buffer): {
       const rawData = buf.subarray(dataStart, dataEnd);
 
       if (contentTypesEntry.method === 0) {
+        if (rawData.length > MAX_MANIFEST_SIZE) {
+          return {
+            isValid: false,
+            error: "The package [Content_Types].xml exceeds maximum allowable manifest size.",
+          };
+        }
         contentTypesText = rawData.toString("utf-8");
       } else if (contentTypesEntry.method === 8) {
-        contentTypesText = inflateRawSync(rawData).toString("utf-8");
+        contentTypesText = inflateRawSync(rawData, {
+          maxOutputLength: MAX_MANIFEST_SIZE,
+        }).toString("utf-8");
       }
     }
   } catch (err: unknown) {

@@ -49,19 +49,22 @@ export async function POST(request: Request, { params }: RouteProps) {
 
   try {
     const transactionResult = await db.$transaction(async (tx) => {
-      // Fetch submission inside write transaction
-      const submission = await tx.submission.findUnique({
-        where: { id: submissionId },
-        include: { result: true },
-      });
+      // 1. Acquire row-level lock on Submission row to serialize against concurrent file replacement
+      const lockedSubmissions = await tx.$queryRaw<
+        Array<{ id: string; updatedAt: Date }>
+      >`
+        SELECT id, "updatedAt" FROM "Submission" WHERE id = ${submissionId} FOR UPDATE
+      `;
 
-      if (!submission) {
+      if (lockedSubmissions.length === 0) {
         return { status: 404 as const, error: "Submission not found." };
       }
 
+      const lockedSub = lockedSubmissions[0];
+
       // Stale grading protection: if student resubmitted after staff loaded the form
       if (
-        submission.updatedAt.toISOString() !== parsed.data.submissionUpdatedAt
+        lockedSub.updatedAt.toISOString() !== parsed.data.submissionUpdatedAt
       ) {
         return {
           status: 409 as const,
@@ -70,16 +73,51 @@ export async function POST(request: Request, { params }: RouteProps) {
         };
       }
 
+      // Check if result already exists for this submission
+      const existingResult = await tx.result.findUnique({
+        where: { submissionId },
+      });
+
       // Save grade
-      if (submission.result) {
+      if (existingResult) {
+        // 2. Acquire row-level lock on Result row
+        const lockedResults = await tx.$queryRaw<
+          Array<{
+            id: string;
+            grade: Prisma.Decimal;
+            publishedAt: Date | null;
+            updatedAt: Date;
+          }>
+        >`
+          SELECT id, grade, "publishedAt", "updatedAt" FROM "Result" WHERE id = ${existingResult.id} FOR UPDATE
+        `;
+
+        if (lockedResults.length === 0) {
+          return { status: 404 as const, error: "Result not found." };
+        }
+
+        const lockedRes = lockedResults[0];
+
+        // Stale result check: if grade was modified concurrently by another staff action
+        if (
+          parsed.data.expectedResultUpdatedAt &&
+          lockedRes.updatedAt.toISOString() !== parsed.data.expectedResultUpdatedAt
+        ) {
+          return {
+            status: 409 as const,
+            error:
+              "The grade has been modified by another action. Please reopen the submission to view latest values.",
+          };
+        }
+
         // An unchanged save preserves publication state; changing a published grade withholds it again
-        const isSameGrade = submission.result.grade.equals(gradeDecimal);
-        const newPublishedAt = isSameGrade
-          ? submission.result.publishedAt
-          : null;
+        const isSameGrade = new Prisma.Decimal(lockedRes.grade).equals(
+          gradeDecimal,
+        );
+        const newPublishedAt = isSameGrade ? lockedRes.publishedAt : null;
 
         const updatedResult = await tx.result.update({
-          where: { id: submission.result.id },
+          where: { id: lockedRes.id },
           data: {
             grade: gradeDecimal,
             publishedAt: newPublishedAt,
@@ -92,7 +130,7 @@ export async function POST(request: Request, { params }: RouteProps) {
       // New grade: always saved as withheld (publishedAt = null)
       const createdResult = await tx.result.create({
         data: {
-          submissionId: submission.id,
+          submissionId: lockedSub.id,
           grade: gradeDecimal,
           publishedAt: null,
         },

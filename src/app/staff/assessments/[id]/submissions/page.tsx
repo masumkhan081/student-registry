@@ -175,7 +175,7 @@ async function SubmissionsContent({ params }: PageProps) {
             <tbody className="divide-y divide-slate-200 bg-white">
               {formattedSubmissions.map((sub) => (
                 <StaffSubmissionRow
-                  key={sub.id}
+                  key={`${sub.id}-${sub.updatedAt}-${sub.result?.updatedAt ?? "none"}`}
                   submission={sub}
                   assessmentTitle={assessment.title}
                 />

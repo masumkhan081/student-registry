@@ -116,10 +116,89 @@ const assessmentFixtures = [
   },
 ];
 
-function createSeedPdfBuffer(title: string, author: string): Buffer {
-  return Buffer.from(
-    `%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>\nendobj\n4 0 obj\n<< /Length 70 >>\nstream\nBT\n/F1 12 Tf\n72 712 Td\n(${title} - Coursework by ${author}) Tj\nET\nendstream\nendobj\nxref\n0 5\n0000000000 65535 f \n0000000010 00000 n \n0000000060 00000 n \n0000000117 00000 n \n0000000173 00000 n \ntrailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n293\n%%EOF\n`,
-  );
+function createValidCourseworkPdfBuffer(title: string, author: string): Buffer {
+  const streamContent = [
+    "BT",
+    "/F1 18 Tf",
+    "50 720 Td",
+    `(${title}) Tj`,
+    "/F1 12 Tf",
+    "0 -30 Td",
+    `(${author} - Student Coursework Submission) Tj`,
+    "/F1 10 Tf",
+    "0 -25 Td",
+    "(BSc Computing - Academic Year 2026/2027) Tj",
+    "0 -20 Td",
+    "(CS201 Data Structures & Algorithms Coursework Report) Tj",
+    "0 -30 Td",
+    "(Executive Summary:) Tj",
+    "0 -18 Td",
+    "(This coursework analyses algorithm efficiency, time complexity,) Tj",
+    "0 -15 Td",
+    "(and empirical benchmark results across tree structures and hash maps.) Tj",
+    "ET",
+  ].join("\n");
+
+  const streamBytes = Buffer.from(streamContent, "utf-8");
+  const streamLength = streamBytes.length;
+
+  const header = "%PDF-1.4\n";
+  const obj1 = "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n";
+  const obj2 = "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n";
+  const obj3 =
+    "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>\nendobj\n";
+  const obj4Start = `4 0 obj\n<< /Length ${streamLength} >>\nstream\n`;
+  const obj4End = "\nendstream\nendobj\n";
+  const obj5 =
+    "5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n";
+
+  let offset = header.length;
+  const o1 = offset;
+  offset += obj1.length;
+  const o2 = offset;
+  offset += obj2.length;
+  const o3 = offset;
+  offset += obj3.length;
+  const o4 = offset;
+  offset += obj4Start.length + streamLength + obj4End.length;
+  const o5 = offset;
+  offset += obj5.length;
+
+  const startxref = offset;
+
+  function padOffset(n: number): string {
+    return String(n).padStart(10, "0");
+  }
+
+  const xref = [
+    "xref",
+    "0 6",
+    "0000000000 65535 f ",
+    `${padOffset(o1)} 00000 n `,
+    `${padOffset(o2)} 00000 n `,
+    `${padOffset(o3)} 00000 n `,
+    `${padOffset(o4)} 00000 n `,
+    `${padOffset(o5)} 00000 n `,
+    "trailer",
+    "<< /Size 6 /Root 1 0 R >>",
+    "startxref",
+    String(startxref),
+    "%%EOF\n",
+  ].join("\n");
+
+  const parts = [
+    Buffer.from(header, "utf-8"),
+    Buffer.from(obj1, "utf-8"),
+    Buffer.from(obj2, "utf-8"),
+    Buffer.from(obj3, "utf-8"),
+    Buffer.from(obj4Start, "utf-8"),
+    streamBytes,
+    Buffer.from(obj4End, "utf-8"),
+    Buffer.from(obj5, "utf-8"),
+    Buffer.from(xref, "utf-8"),
+  ];
+
+  return Buffer.concat(parts);
 }
 
 const seedSubmissionFixtures = [
@@ -267,78 +346,77 @@ async function main() {
       include: { result: true },
     });
 
-    const pdfBuffer = createSeedPdfBuffer(
-      "Algorithms Coursework",
+    // If a submission already exists for this slot, preserve reviewer-created or replacement files entirely.
+    // Do NOT overwrite active storage objects and do NOT attach fixture grades to reviewer submissions.
+    if (existingSub) {
+      continue;
+    }
+
+    if (!supabaseClient) {
+      throw new Error(
+        `Cannot seed submission fixture for ${fixture.studentId}: Supabase configuration missing (SUPABASE_URL and SUPABASE_SECRET_KEY required).`,
+      );
+    }
+
+    const pdfBuffer = createValidCourseworkPdfBuffer(
+      "CS201 Algorithms & Data Structures Coursework Report",
       fixture.studentId === "demo-student-noah" ? "Noah Patel" : "Mia Clarke",
     );
 
-    // If storage client is configured, ensure demo file is in Supabase Storage
-    if (supabaseClient) {
-      try {
-        await supabaseClient.storage
-          .from(bucket)
-          .upload(fixture.storagePath, pdfBuffer, {
-            contentType: "application/pdf",
-            upsert: true,
-          });
-      } catch (err: unknown) {
-        console.warn(
-          `Could not upload seed file to storage: ${err instanceof Error ? err.message : String(err)}`,
+    // Upload demo fixture to Supabase Storage without overwriting active objects
+    const { error: uploadError } = await supabaseClient.storage
+      .from(bucket)
+      .upload(fixture.storagePath, pdfBuffer, {
+        contentType: "application/pdf",
+        upsert: false,
+      });
+
+    // If upload returned an error, verify whether the file is already available in storage
+    if (uploadError) {
+      const { data: downloadData, error: downloadError } =
+        await supabaseClient.storage.from(bucket).download(fixture.storagePath);
+
+      if (downloadError || !downloadData) {
+        throw new Error(
+          `Failed to upload or verify seed fixture at '${fixture.storagePath}': ${uploadError.message}. Actionable fix: verify bucket permissions and SUPABASE_SECRET_KEY.`,
+        );
+      }
+    } else {
+      // Explicitly confirm newly uploaded file is downloadable before creating database record
+      const { data: verifyData, error: verifyError } =
+        await supabaseClient.storage.from(bucket).download(fixture.storagePath);
+
+      if (verifyError || !verifyData) {
+        throw new Error(
+          `Uploaded seed fixture at '${fixture.storagePath}' could not be verified in Storage: ${verifyError?.message}`,
         );
       }
     }
 
-    if (!existingSub) {
-      // Create new submission with its result
-      const submittedAt = dateFromToday(-fixture.submittedDaysAgo);
-      const publishedAt =
-        fixture.publishedDaysAgo !== null
-          ? dateFromToday(-fixture.publishedDaysAgo)
-          : null;
+    // Create new submission with its result
+    const submittedAt = dateFromToday(-fixture.submittedDaysAgo);
+    const publishedAt =
+      fixture.publishedDaysAgo !== null
+        ? dateFromToday(-fixture.publishedDaysAgo)
+        : null;
 
-      await db.submission.create({
-        data: {
-          studentId: fixture.studentId,
-          assessmentId: fixture.assessmentId,
-          storagePath: fixture.storagePath,
-          originalFilename: fixture.filename,
-          size: pdfBuffer.length,
-          submittedAt,
-          result: {
-            create: {
-              grade: new Prisma.Decimal(fixture.grade),
-              publishedAt,
-            },
-          },
-        },
-      });
-    } else {
-      // Submission already exists: preserve reviewer edits on rerun
-      // Only seed Result if no result exists yet
-      if (!existingSub.result) {
-        const publishedAt =
-          fixture.publishedDaysAgo !== null
-            ? dateFromToday(-fixture.publishedDaysAgo)
-            : null;
-
-        await db.result.create({
-          data: {
-            submissionId: existingSub.id,
+    await db.submission.create({
+      data: {
+        studentId: fixture.studentId,
+        assessmentId: fixture.assessmentId,
+        storagePath: fixture.storagePath,
+        originalFilename: fixture.filename,
+        size: pdfBuffer.length,
+        submittedAt,
+        result: {
+          create: {
             grade: new Prisma.Decimal(fixture.grade),
             publishedAt,
           },
-        });
-      }
-    }
+        },
+      },
+    });
   }
-
-  // Guarantee Ava's upcoming assessment has NO submission, so the reviewer can walk through upload -> grade -> publish
-  await db.submission.deleteMany({
-    where: {
-      studentId: "demo-student-ava",
-      assessmentId: "demo-assessment-computing-upcoming",
-    },
-  });
 
   const students = await db.student.findMany({
     where: {

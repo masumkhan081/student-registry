@@ -60,19 +60,26 @@ export const saveGradeSchema = z.object({
     .string()
     .trim()
     .min(1, "submissionUpdatedAt is required."),
+  expectedResultUpdatedAt: z.string().trim().optional(),
 });
 
 export type SaveGradeInput = z.infer<typeof saveGradeSchema>;
 
 export const publishGradeSchema = z.object({
-  expectedGrade: z.string().trim().optional(),
-  expectedResultUpdatedAt: z.string().trim().optional(),
+  expectedGrade: z.string().trim().min(1, "expectedGrade is required."),
+  expectedResultUpdatedAt: z
+    .string()
+    .trim()
+    .min(1, "expectedResultUpdatedAt is required."),
 });
 
 export type PublishGradeInput = z.infer<typeof publishGradeSchema>;
 
 export const withholdGradeSchema = z.object({
-  expectedResultUpdatedAt: z.string().trim().optional(),
+  expectedResultUpdatedAt: z
+    .string()
+    .trim()
+    .min(1, "expectedResultUpdatedAt is required."),
 });
 
 export type WithholdGradeInput = z.infer<typeof withholdGradeSchema>;

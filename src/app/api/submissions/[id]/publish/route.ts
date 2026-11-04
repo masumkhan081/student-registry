@@ -31,17 +31,26 @@ export async function POST(request: Request, { params }: RouteProps) {
   try {
     body = await request.json();
   } catch {
-    // Body is optional
+    return NextResponse.json(
+      { error: "Invalid JSON request body." },
+      { status: 400 },
+    );
   }
 
   const parsed = publishGradeSchema.safeParse(body);
+  if (!parsed.success) {
+    const firstError =
+      parsed.error.issues[0]?.message || "Invalid publication parameters.";
+    return NextResponse.json({ error: firstError }, { status: 400 });
+  }
+
   const { id: submissionId } = await params;
 
   try {
     const transactionResult = await db.$transaction(async (tx) => {
       const submission = await tx.submission.findUnique({
         where: { id: submissionId },
-        include: { result: true },
+        select: { id: true, result: { select: { id: true } } },
       });
 
       if (!submission) {
@@ -51,40 +60,54 @@ export async function POST(request: Request, { params }: RouteProps) {
       if (!submission.result) {
         return {
           status: 400 as const,
-          error: "Cannot publish an ungraded submission. Please assign a grade first.",
+          error:
+            "Cannot publish an ungraded submission. Please assign a grade first.",
         };
       }
 
+      // 1. Acquire row lock on Result
+      const lockedResults = await tx.$queryRaw<
+        Array<{
+          id: string;
+          grade: Prisma.Decimal;
+          publishedAt: Date | null;
+          updatedAt: Date;
+        }>
+      >`
+        SELECT id, grade, "publishedAt", "updatedAt" FROM "Result" WHERE id = ${submission.result.id} FOR UPDATE
+      `;
+
+      if (lockedResults.length === 0) {
+        return { status: 404 as const, error: "Result not found." };
+      }
+
+      const lockedRes = lockedResults[0];
+
       // Stale publication check: if grade changed or result updated since staff viewed it
       if (
-        parsed.success &&
-        parsed.data.expectedResultUpdatedAt &&
-        submission.result.updatedAt.toISOString() !==
-          parsed.data.expectedResultUpdatedAt
+        lockedRes.updatedAt.toISOString() !== parsed.data.expectedResultUpdatedAt
       ) {
         return {
           status: 409 as const,
           error:
-            "The grade has been modified by another action. Please refresh the page before publishing.",
+            "The grade has been modified by another action. Please reopen the record before publishing.",
         };
       }
 
       if (
-        parsed.success &&
-        parsed.data.expectedGrade &&
-        !submission.result.grade.equals(
+        !new Prisma.Decimal(lockedRes.grade).equals(
           new Prisma.Decimal(parsed.data.expectedGrade),
         )
       ) {
         return {
           status: 409 as const,
           error:
-            "The grade has changed since it was loaded. Please refresh the page before publishing.",
+            "The grade has changed since it was loaded. Please reopen the record before publishing.",
         };
       }
 
       const updatedResult = await tx.result.update({
-        where: { id: submission.result.id },
+        where: { id: lockedRes.id },
         data: {
           publishedAt: new Date(),
         },

@@ -69,6 +69,9 @@ export function StaffSubmissionRow({
     defaultValues: {
       grade: result ? result.grade : "",
     },
+    values: {
+      grade: result ? result.grade : "",
+    },
   });
 
   async function onSaveGrade(data: GradeFormData) {
@@ -83,6 +86,7 @@ export function StaffSubmissionRow({
         body: JSON.stringify({
           grade: data.grade,
           submissionUpdatedAt: submission.updatedAt,
+          expectedResultUpdatedAt: result ? result.updatedAt : undefined,
         }),
       });
 
